@@ -47,6 +47,24 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
+// API Root Index
+app.get('/api', (req, res) => {
+  res.json({
+    service: 'Personal Cloud Storage Engine & Integration API',
+    status: 'ONLINE',
+    version: '1.0.0',
+    nextcloud: env.NEXTCLOUD_INTERNAL_URL,
+    endpoints: {
+      auth: '/api/auth',
+      storage: '/api/storage',
+      system: '/api/system',
+      files: '/api/files',
+      health: '/health',
+      telemetryWebSocket: '/ws/telemetry'
+    }
+  });
+});
+
 // API Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/storage', storageRoutes);
