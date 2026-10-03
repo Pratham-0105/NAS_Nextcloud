@@ -1,0 +1,34 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Build outputs
+.next/
+out/
+dist/
+build/
+
+# Environment files
+.env
+.env.local
+.env.production
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+*.log
+
+# Prisma
+dev.db
+dev.db-journal
+
+# Operating System
+.DS_Store
+Thumbs.db
+
+# Docker volumes & data
+postgres_data/
+redis_data/
+nextcloud_data/

@@ -1,0 +1,59 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: nas_postgres
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: cloud_admin
+      POSTGRES_PASSWORD: supersecure_admin_password_change_me
+    volumes:
+      - postgres_dev_data:/var/lib/postgresql/data
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
+    networks:
+      - nas_network
+
+  redis:
+    image: redis:7-alpine
+    container_name: nas_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_dev_data:/data
+    networks:
+      - nas_network
+
+  nextcloud:
+    image: nextcloud:28-apache
+    container_name: nas_nextcloud
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    depends_on:
+      - postgres
+      - redis
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_DB: nextcloud
+      POSTGRES_USER: cloud_admin
+      POSTGRES_PASSWORD: supersecure_admin_password_change_me
+      REDIS_HOST: redis
+      NEXTCLOUD_ADMIN_USER: ncadmin
+      NEXTCLOUD_ADMIN_PASSWORD: change_this_strong_nc_password
+      NEXTCLOUD_TRUSTED_DOMAINS: "localhost 127.0.0.1 0.0.0.0 nextcloud *.onrender.com *.trycloudflare.com"
+      OVERWRITEPROTOCOL: "http"
+    volumes:
+      - nextcloud_dev_data:/var/www/html
+    networks:
+      - nas_network
+
+volumes:
+  postgres_dev_data:
+  redis_dev_data:
+  nextcloud_dev_data:
+
+networks:
+  nas_network:
+    driver: bridge

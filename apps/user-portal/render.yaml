@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: personal-cloud-portal
+    env: node
+    plan: free
+    buildCommand: npm install && npm run build
+    startCommand: npm run start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NEXT_PUBLIC_API_URL
+        sync: false # Set to your Cloudflare Tunnel URL (e.g. https://nas-api.yourdomain.com)

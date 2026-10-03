@@ -1,0 +1,28 @@
+{
+  "name": "personal-cloud-storage-platform",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Self-Hosted Personal Cloud Storage Platform with Nextcloud, Docker, and Dual Portals",
+  "workspaces": [
+    "backend",
+    "apps/*"
+  ],
+  "scripts": {
+    "dev:backend": "npm --workspace=backend run dev",
+    "dev:admin": "npm --workspace=apps/admin-portal run dev",
+    "dev:user": "npm --workspace=apps/user-portal run dev",
+    "build:all": "npm --workspaces run build",
+    "lint:all": "npm --workspaces run lint"
+  },
+  "keywords": [
+    "nextcloud",
+    "nas",
+    "cloud-storage",
+    "docker",
+    "mergerfs",
+    "nextjs",
+    "express"
+  ],
+  "author": "Semester Project",
+  "license": "MIT"
+}

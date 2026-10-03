@@ -1,0 +1,104 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum Role {
+  ADMIN
+  USER
+}
+
+enum DeviceType {
+  INTERNAL_SSD
+  INTERNAL_HDD
+  USB_SSD
+  USB_HDD
+  USB_FLASH
+  NVME
+  UNKNOWN
+}
+
+enum DeviceStatus {
+  AVAILABLE
+  ACTIVE
+  DEGRADED
+  DISCONNECTED
+  ERROR
+}
+
+enum EventSeverity {
+  INFO
+  WARNING
+  CRITICAL
+}
+
+model User {
+  id              String         @id @default(uuid())
+  email           String         @unique
+  name            String
+  passwordHash    String
+  role            Role           @default(USER)
+  nextcloudUser   String         @unique
+  quotaBytes      BigInt?        // Null indicates unlimited
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+  auditLogs       AuditLog[]
+}
+
+model StorageDevice {
+  id              String         @id @default(uuid())
+  deviceName      String         // e.g. "sdb1", "nvme0n1p2"
+  devicePath      String         @unique // e.g. "/dev/sdb1"
+  deviceModel     String?        // e.g. "Samsung Portable SSD T7"
+  deviceType      DeviceType     @default(UNKNOWN)
+  filesystem      String?        // e.g. "ext4", "exfat", "ntfs"
+  uuid            String         @unique
+  totalBytes      BigInt
+  usedBytes       BigInt
+  freeBytes       BigInt
+  mountPoint      String?        // e.g. "/mnt/devices/usb-sdb1"
+  poolPriority    Int            @default(1)
+  isCloudStorage  Boolean        @default(false)
+  status          DeviceStatus   @default(AVAILABLE)
+  lastSeenAt      DateTime       @default(now())
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+  events          StorageEvent[]
+}
+
+model StorageEvent {
+  id          String         @id @default(uuid())
+  deviceId    String?
+  device      StorageDevice? @relation(fields: [deviceId], references: [id], onDelete: SetNull)
+  severity    EventSeverity  @default(INFO)
+  eventType   String         // e.g. "DEVICE_DETECTED", "DEVICE_ADDED", "CAPACITY_WARNING"
+  message     String
+  metadata    Json?
+  timestamp   DateTime       @default(now())
+}
+
+model SystemMetric {
+  id          Int           @id @default(autoincrement())
+  cpuUsage    Float
+  ramUsed     BigInt
+  ramTotal    BigInt
+  poolUsed    BigInt
+  poolTotal   BigInt
+  recordedAt  DateTime      @default(now())
+
+  @@index([recordedAt])
+}
+
+model AuditLog {
+  id          String        @id @default(uuid())
+  userId      String?
+  user        User?         @relation(fields: [userId], references: [id], onDelete: SetNull)
+  action      String
+  ipAddress   String?
+  details     Json?
+  createdAt   DateTime      @default(now())
+}

@@ -1,0 +1,37 @@
+# Caddy Reverse Proxy Configuration for Personal Cloud Platform
+# Handles edge routing, automatic HTTPS, WebDAV headers, and WebSockets
+
+:80 {
+    # Compress responses
+    encode gzip zstd
+
+    # Health check
+    handle /healthz {
+        respond "OK" 200
+    }
+
+    # Admin Storage Portal (served on /admin*)
+    handle_path /admin* {
+        reverse_proxy admin-portal:3001
+    }
+
+    # Backend API endpoints (/api/*)
+    handle /api/* {
+        reverse_proxy backend:4000
+    }
+
+    # WebSocket connection for real-time telemetry
+    handle /ws/* {
+        reverse_proxy backend:4000
+    }
+
+    # Direct WebDAV / Nextcloud synchronization path
+    handle /remote.php/* {
+        reverse_proxy nextcloud:80
+    }
+
+    # Default: User Cloud Portal (Render equivalent or local root)
+    handle {
+        reverse_proxy user-portal:3000
+    }
+}
