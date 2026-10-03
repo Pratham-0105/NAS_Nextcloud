@@ -1,7 +1,7 @@
 import assert from 'node:assert';
 
 const BASE_URL = 'http://localhost:4001/api';
-const NC_URL = 'http://localhost:8080';
+const NC_URL = 'http://localhost:8085';
 const TEST_USER = 'phase2_tester';
 const TEST_PASS = 'Phase2SecurePass!';
 const TEST_EMAIL = 'phase2_tester@cloud.local';

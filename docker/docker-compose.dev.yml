@@ -4,7 +4,7 @@ services:
     container_name: nas_postgres
     restart: unless-stopped
     ports:
-      - "5432:5432"
+      - "${POSTGRES_HOST_PORT:-5433}:5432"
     environment:
       POSTGRES_USER: cloud_admin
       POSTGRES_PASSWORD: supersecure_admin_password_change_me
@@ -24,7 +24,7 @@ services:
     container_name: nas_redis
     restart: unless-stopped
     ports:
-      - "6379:6379"
+      - "${REDIS_HOST_PORT:-6379}:6379"
     volumes:
       - redis_dev_data:/data
     healthcheck:
@@ -40,7 +40,7 @@ services:
     container_name: nas_nextcloud
     restart: unless-stopped
     ports:
-      - "8080:80"
+      - "${NEXTCLOUD_HOST_PORT:-8085}:80"
     depends_on:
       postgres:
         condition: service_healthy
