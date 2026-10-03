@@ -42,11 +42,13 @@ interface PartitionInfo {
 interface StorageDevice {
   deviceName: string;
   devicePath: string;
-  deviceModel: string;
+  deviceModel: string | null;
   vendor?: string | null;
   model?: string | null;
   serial?: string | null;
   deviceType: string;
+  transport?: string | null;
+  detectionSource: 'REAL_HARDWARE' | 'SIMULATION';
   filesystem: string | null;
   uuid: string;
   totalBytes: number;
@@ -87,11 +89,11 @@ function formatBytes(bytes: number, decimals = 1): string {
 export default function AdminDashboard() {
   const [devices, setDevices] = useState<StorageDevice[]>([]);
   const [pool, setPool] = useState<PoolSummary>({
-    totalBytes: 1000000000000,
-    usedBytes: 380000000000,
-    freeBytes: 620000000000,
-    percentUsed: 38,
-    activeDeviceCount: 1,
+    totalBytes: 0,
+    usedBytes: 0,
+    freeBytes: 0,
+    percentUsed: 0,
+    activeDeviceCount: 0,
     status: 'HEALTHY',
   });
   const [cpuUsage, setCpuUsage] = useState(18.2);
@@ -303,6 +305,31 @@ export default function AdminDashboard() {
           </div>
         )}
 
+        {/* Environment Mode Banner */}
+        {devices.length > 0 && devices.some(d => d.detectionSource === 'SIMULATION') ? (
+          <div className="bg-amber-950/40 border border-amber-500/40 text-amber-200 px-4 py-3 rounded-2xl flex items-center justify-between text-xs shadow-md">
+            <div className="flex items-center gap-2.5">
+              <span className="h-2.5 w-2.5 rounded-full bg-amber-400 animate-pulse shrink-0"></span>
+              <span className="font-bold text-amber-300">Environment: macOS Simulation Mode</span>
+              <span className="text-slate-300 hidden md:inline">• Operating in simulated storage mode for local development. Physical disks are not modified.</span>
+            </div>
+            <span className="px-2.5 py-1 rounded-md bg-amber-500/20 text-amber-300 font-mono text-[10px] font-bold uppercase tracking-wider border border-amber-500/30">
+              SIMULATION
+            </span>
+          </div>
+        ) : devices.length > 0 ? (
+          <div className="bg-emerald-950/40 border border-emerald-500/40 text-emerald-200 px-4 py-3 rounded-2xl flex items-center justify-between text-xs shadow-md">
+            <div className="flex items-center gap-2.5">
+              <span className="h-2.5 w-2.5 rounded-full bg-emerald-400 shrink-0"></span>
+              <span className="font-bold text-emerald-300">Environment: Linux Host OS</span>
+              <span className="text-slate-300 hidden md:inline">• Real hardware storage detection active via Linux kernel (lsblk / udev).</span>
+            </div>
+            <span className="px-2.5 py-1 rounded-md bg-emerald-500/20 text-emerald-300 font-mono text-[10px] font-bold uppercase tracking-wider border border-emerald-500/30">
+              ● REAL HARDWARE
+            </span>
+          </div>
+        ) : null}
+
         {/* Hot-Plug Notification Card */}
         {hotPlugCandidate && (
           <div className="bg-gradient-to-r from-amber-950/40 via-amber-900/20 to-slate-900/60 border border-amber-500/40 rounded-2xl p-5 shadow-lg relative overflow-hidden">
@@ -461,9 +488,25 @@ export default function AdminDashboard() {
                           <button onClick={() => togglePartitions(dev.deviceName)} className="text-slate-400 hover:text-white">
                             {expandedPartitions[dev.deviceName] ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
                           </button>
-                          {dev.deviceModel}
+                          <span>{dev.deviceModel || dev.model || 'Storage Device'}</span>
+                          {dev.detectionSource === 'REAL_HARDWARE' ? (
+                            <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
+                              ● REAL HARDWARE
+                            </span>
+                          ) : (
+                            <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-500/15 text-amber-400 border border-amber-500/30">
+                              ● SIMULATION
+                            </span>
+                          )}
+                          <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-blue-500/15 text-blue-300 border border-blue-500/30">
+                            {dev.transport || 'Unknown'}
+                          </span>
                         </div>
-                        <div className="text-xs font-mono text-slate-400 pl-6">{dev.devicePath} ({dev.deviceName})</div>
+                        <div className="text-xs font-mono text-slate-400 pl-6 flex items-center gap-2 mt-0.5">
+                          <span>{dev.devicePath} ({dev.deviceName})</span>
+                          <span>•</span>
+                          <span>{dev.isRotational ? 'Rotational (HDD)' : 'Solid-State (SSD/Flash)'}</span>
+                        </div>
                       </td>
                       <td className="py-3.5 px-5">
                         <span className="px-2 py-0.5 rounded text-xs bg-slate-800 text-slate-300 border border-slate-700 font-mono">
@@ -550,8 +593,26 @@ export default function AdminDashboard() {
                 {availableDevices.map((dev) => (
                   <tr key={dev.uuid} className="hover:bg-slate-800/30 transition">
                     <td className="py-3.5 px-5">
-                      <div className="font-semibold text-white">{dev.deviceModel}</div>
-                      <div className="text-xs font-mono text-slate-400">{dev.devicePath} ({dev.deviceName})</div>
+                      <div className="font-semibold text-white flex items-center gap-2">
+                        <span>{dev.deviceModel || dev.model || 'Storage Device'}</span>
+                        {dev.detectionSource === 'REAL_HARDWARE' ? (
+                          <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
+                            ● REAL HARDWARE
+                          </span>
+                        ) : (
+                          <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-500/15 text-amber-400 border border-amber-500/30">
+                            ● SIMULATION
+                          </span>
+                        )}
+                        <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-blue-500/15 text-blue-300 border border-blue-500/30">
+                          {dev.transport || 'Unknown'}
+                        </span>
+                      </div>
+                      <div className="text-xs font-mono text-slate-400 flex items-center gap-2 mt-0.5">
+                        <span>{dev.devicePath} ({dev.deviceName})</span>
+                        <span>•</span>
+                        <span>{dev.isRotational ? 'Rotational (HDD)' : 'Solid-State (SSD/Flash)'}</span>
+                      </div>
                     </td>
                     <td className="py-3.5 px-5">
                       <span className="px-2 py-0.5 rounded text-xs bg-slate-800 text-slate-300 border border-slate-700 font-mono">
@@ -630,7 +691,21 @@ export default function AdminDashboard() {
                 {systemDevices.map((sysDev) => (
                   <tr key={sysDev.uuid} className="hover:bg-rose-900/10 transition">
                     <td className="py-3.5 px-5">
-                      <div className="font-semibold text-white">{sysDev.deviceModel}</div>
+                      <div className="font-semibold text-white flex items-center gap-2">
+                        <span>{sysDev.deviceModel || sysDev.model || 'Host System Disk'}</span>
+                        {sysDev.detectionSource === 'REAL_HARDWARE' ? (
+                          <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
+                            ● REAL HARDWARE
+                          </span>
+                        ) : (
+                          <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-500/15 text-amber-400 border border-amber-500/30">
+                            ● SIMULATION
+                          </span>
+                        )}
+                        <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-blue-500/15 text-blue-300 border border-blue-500/30">
+                          {sysDev.transport || 'NVMe'}
+                        </span>
+                      </div>
                       <div className="text-xs font-mono text-rose-300/70">{sysDev.devicePath} ({sysDev.deviceName})</div>
                     </td>
                     <td className="py-3.5 px-5 font-medium text-slate-300">{formatBytes(sysDev.totalBytes)}</td>
@@ -689,14 +764,20 @@ export default function AdminDashboard() {
             </div>
 
             <div className="grid grid-cols-2 gap-3 text-xs bg-slate-950/60 p-4 rounded-xl border border-slate-800">
-              <div><span className="text-slate-500">Model:</span> <span className="font-semibold text-white">{inspectModalDevice.deviceModel}</span></div>
+              <div><span className="text-slate-500">Source:</span> <span className={inspectModalDevice.detectionSource === 'REAL_HARDWARE' ? 'font-bold text-emerald-400' : 'font-bold text-amber-400'}>{inspectModalDevice.detectionSource === 'REAL_HARDWARE' ? '● Real Hardware (Host OS)' : '● Simulation (macOS Mode)'}</span></div>
+              <div><span className="text-slate-500">Connection / Bus:</span> <span className="font-semibold text-blue-300">{inspectModalDevice.transport || 'Unknown'}</span></div>
+              <div><span className="text-slate-500">Model:</span> <span className="font-semibold text-white">{inspectModalDevice.model || inspectModalDevice.deviceModel || 'Not reported by hardware'}</span></div>
+              <div><span className="text-slate-500">Vendor:</span> <span className="font-semibold text-white">{inspectModalDevice.vendor || 'Not reported by hardware'}</span></div>
+              <div><span className="text-slate-500">Serial:</span> <span className="font-mono text-slate-300">{inspectModalDevice.serial || 'Not available'}</span></div>
+              <div><span className="text-slate-500">Media Type:</span> <span className="font-mono text-slate-300">{inspectModalDevice.isRotational ? 'Rotational (HDD)' : 'Solid-State (SSD/Flash)'}</span></div>
               <div><span className="text-slate-500">Device Path:</span> <span className="font-mono text-blue-400">{inspectModalDevice.devicePath}</span></div>
-              <div><span className="text-slate-500">Capacity:</span> <span className="font-semibold text-white">{formatBytes(inspectModalDevice.totalBytes)}</span></div>
-              <div><span className="text-slate-500">Type:</span> <span className="font-mono text-slate-300">{inspectModalDevice.deviceType}</span></div>
+              <div><span className="text-slate-500">Capacity:</span> <span className="font-semibold text-white">{formatBytes(inspectModalDevice.totalBytes)} ({inspectModalDevice.totalBytes.toLocaleString()} bytes)</span></div>
               <div><span className="text-slate-500">Filesystem:</span> <span className="uppercase text-slate-300 font-mono">{inspectModalDevice.filesystem || 'raw'}</span></div>
               <div><span className="text-slate-500">UUID:</span> <span className="font-mono text-slate-400 text-[11px] truncate block">{inspectModalDevice.uuid}</span></div>
               <div><span className="text-slate-500">Mount:</span> <span className="text-slate-300">{inspectModalDevice.mountPoint || 'Not mounted'}</span></div>
+              <div><span className="text-slate-500">Removable:</span> <span className="text-slate-300">{inspectModalDevice.isRemovable ? 'Yes' : 'No'}</span></div>
               <div><span className="text-slate-500">Status:</span> <span className="font-semibold text-emerald-400">{inspectModalDevice.status}</span></div>
+              <div><span className="text-slate-500">System Disk:</span> <span className={inspectModalDevice.isSystemDisk ? 'font-bold text-rose-400' : 'text-slate-300'}>{inspectModalDevice.isSystemDisk ? 'Yes (Protected)' : 'No (Cloud Eligible)'}</span></div>
             </div>
 
             <div>

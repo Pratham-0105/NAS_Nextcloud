@@ -9,21 +9,8 @@ const router = Router();
 const detector = new StorageDetector();
 const poolService = new StoragePoolService(detector);
 
-// In-memory event log store for telemetry and admin timeline
-const storageEvents: StorageEventPayload[] = [
-  {
-    eventType: 'storage.device.detected',
-    deviceName: 'nvme0n1',
-    message: 'System Disk Samsung 980 PRO detected on PCI bus. Protected from cloud formatting.',
-    timestamp: new Date(Date.now() - 3600000).toISOString(),
-  },
-  {
-    eventType: 'storage.device.registered',
-    deviceName: 'sdb',
-    message: 'Seagate Expansion 1TB USB HDD registered as cloud storage candidate.',
-    timestamp: new Date(Date.now() - 1800000).toISOString(),
-  }
-];
+// In-memory event log store for telemetry and admin timeline (populated dynamically)
+const storageEvents: StorageEventPayload[] = [];
 
 // Subscribe to pool service events
 poolService.onEvent((evt) => {
@@ -152,6 +139,8 @@ router.post('/devices/simulate-hotplug', async (req: Request, res: Response): Pr
       model: 'CT1000X8SSD9',
       serial: 'CRUCIAL-X8-1000',
       deviceType: 'USB_SSD',
+      transport: 'USB',
+      detectionSource: 'SIMULATION',
       filesystem: 'ext4',
       uuid: 'e8f7a6b5-5555-8888-cccc-000000000005',
       totalBytes: 1_000_000_000_000,

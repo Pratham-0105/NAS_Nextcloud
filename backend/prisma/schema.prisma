@@ -76,6 +76,8 @@ model StorageDevice {
   isSystemDisk    Boolean        @default(false) // Protected OS / application disk
   hasExistingData Boolean        @default(false)
   partitions      Json?          // Structured partition tree
+  transport       String?        // e.g. "USB", "NVMe", "SATA", "Unknown"
+  detectionSource String         @default("REAL_HARDWARE") // "REAL_HARDWARE" or "SIMULATION"
   poolPriority    Int            @default(1)
   isCloudStorage  Boolean        @default(false)
   status          DeviceStatus   @default(DETECTED)

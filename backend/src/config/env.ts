@@ -16,7 +16,8 @@ const envSchema = z.object({
   NEXTCLOUD_ADMIN_PASSWORD: z.string().default('admin123'),
   STORAGE_POOL_PATH: z.string().default('/mnt/storage_pool'),
   PHYSICAL_DEVICES_MOUNT_DIR: z.string().default('/mnt/devices'),
-  SIMULATE_STORAGE: z.string().transform(v => v === 'true').default('true'),
+  STORAGE_DETECTION_MODE: z.enum(['auto', 'real', 'simulation']).default('auto'),
+  SIMULATE_STORAGE: z.string().transform(v => v === 'true').default('false'),
 });
 
 export const env = envSchema.parse(process.env);

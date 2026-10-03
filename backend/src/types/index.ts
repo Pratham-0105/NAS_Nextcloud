@@ -20,6 +20,10 @@ export type DeviceStatus =
   | 'DISCONNECTED'
   | 'ERROR';
 
+export type DetectionSource = 'REAL_HARDWARE' | 'SIMULATION';
+
+export type StorageTransport = 'USB' | 'NVMe' | 'SATA' | 'SCSI' | 'Unknown';
+
 export type EventSeverity = 'INFO' | 'WARNING' | 'CRITICAL';
 
 export interface PartitionInfo {
@@ -38,19 +42,22 @@ export interface PartitionInfo {
 
 export interface RawBlockDevice {
   name: string;
+  kname?: string;
   path: string;
   size: number;
   type: string;
   fstype: string | null;
-  mountpoint: string | null;
+  mountpoint?: string | null;
+  mountpoints?: (string | null)[] | null;
   label: string | null;
   uuid: string | null;
   model: string | null;
   vendor?: string | null;
   serial?: string | null;
-  hotplug: boolean;
-  ro: boolean;
-  rm: boolean;
+  hotplug?: boolean;
+  ro?: boolean;
+  rm?: boolean;
+  tran?: string | null;
   rota?: boolean;
   children?: RawBlockDevice[];
 }
@@ -59,11 +66,13 @@ export interface DiscoveredStorageDevice {
   id?: string;
   deviceName: string;
   devicePath: string;
-  deviceModel: string;
+  deviceModel: string | null;
   vendor?: string | null;
   model?: string | null;
   serial?: string | null;
   deviceType: DeviceType;
+  transport: StorageTransport;
+  detectionSource: DetectionSource;
   filesystem: string | null;
   uuid: string;
   totalBytes: number;

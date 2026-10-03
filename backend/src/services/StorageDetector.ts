@@ -6,10 +6,12 @@ import {
   DeviceType, 
   DeviceStatus, 
   RawBlockDevice, 
-  PartitionInfo 
+  PartitionInfo,
+  StorageTransport,
+  DetectionSource
 } from '../types/index.js';
 
-// Sensitive / Protected OS Mount Points
+// Sensitive / Protected OS Mount Points on Linux
 const PROTECTED_SYSTEM_MOUNTS = [
   '/',
   '/boot',
@@ -23,130 +25,217 @@ const PROTECTED_SYSTEM_MOUNTS = [
 ];
 
 export class StorageDetector {
+  private simulatedDevices: DiscoveredStorageDevice[] = [];
+
+  constructor() {
+    this.resetSimulatedDevices();
+  }
+
   /**
-   * Discovers all physical storage devices on the host machine.
+   * Discovers physical storage devices on the host machine.
+   * Modes:
+   *  - 'real': Attempt real hardware detection via lsblk. NEVER falls back to simulation.
+   *  - 'auto': Linux -> real hardware detection; macOS/Windows -> SIMULATION.
+   *  - 'simulation': Returns simulation catalog marked with detectionSource="SIMULATION".
    */
   public async discoverDevices(): Promise<DiscoveredStorageDevice[]> {
-    if (env.SIMULATE_STORAGE) {
+    const mode = env.STORAGE_DETECTION_MODE || (env.SIMULATE_STORAGE ? 'simulation' : 'auto');
+
+    if (mode === 'simulation') {
       return this.getSimulatedDevices();
     }
 
+    if (mode === 'auto' && process.platform !== 'linux') {
+      logger.info(`[STORAGE DETECTION] Platform is ${process.platform} (non-Linux). Using SIMULATION mode.`);
+      return this.getSimulatedDevices();
+    }
+
+    // Must attempt real hardware detection
     try {
-      // Query structured block device hierarchy from Linux host
-      const output = await safeExec('lsblk', [
-        '--json',
-        '-b', // Exact bytes
-        '-o', 'NAME,PATH,SIZE,TYPE,FSTYPE,MOUNTPOINT,LABEL,UUID,MODEL,VENDOR,SERIAL,HOTPLUG,RO,RM,ROTA',
-      ]);
-
-      const parsed = JSON.parse(output);
-      const devices: DiscoveredStorageDevice[] = [];
-
-      if (parsed.blockdevices && Array.isArray(parsed.blockdevices)) {
-        for (const dev of parsed.blockdevices) {
-          // Only inspect primary disks (type === 'disk' or 'nvme')
-          if (dev.type === 'disk' || dev.type === 'nvme' || !dev.children) {
-            const processed = this.processBlockDisk(dev);
-            if (processed) {
-              devices.push(processed);
-            }
-          }
-        }
-      }
-
+      const devices = await this.detectLinuxHardware();
       return devices;
     } catch (err: any) {
-      logger.error('[ERROR] Failed to inspect host block devices via lsblk:', err);
-      // Fallback to simulated devices if command fails in non-Linux container
-      return this.getSimulatedDevices();
+      if (mode === 'real') {
+        // STRICT: Do NOT fall back to simulation when mode is 'real'
+        logger.error(`[CRITICAL] Real hardware detection failed in 'real' mode:`, err.message);
+        throw new Error(
+          `Real hardware detection failed: ${err.message}. Silent simulation fallback is disabled in STORAGE_DETECTION_MODE=real.`
+        );
+      } else {
+        // mode === 'auto' on Linux, if lsblk failed, report error and return empty list
+        logger.error(`[STORAGE DETECTION] Host block device inspection failed on Linux:`, err.message);
+        throw new Error(`Failed to query host storage hardware via lsblk: ${err.message}`);
+      }
     }
   }
 
-  private processBlockDisk(dev: RawBlockDevice): DiscoveredStorageDevice | null {
-    // Ignore loop, ram, and optical drives
-    if (dev.type === 'loop' || dev.type === 'rom' || dev.name.startsWith('loop')) {
-      return null;
+  /**
+   * Real Linux hardware block device detector using lsblk JSON output.
+   */
+  public async detectLinuxHardware(): Promise<DiscoveredStorageDevice[]> {
+    // Query structured block device hierarchy from Linux kernel via util-linux
+    const output = await safeExec('lsblk', [
+      '-b', // Exact sizes in bytes
+      '-J', // JSON output format
+      '-o',
+      'NAME,KNAME,PATH,TYPE,SIZE,FSTYPE,LABEL,UUID,MOUNTPOINT,MOUNTPOINTS,MODEL,VENDOR,SERIAL,RM,RO,TRAN,ROTA',
+    ]);
+
+    const parsed = JSON.parse(output);
+    const devices: DiscoveredStorageDevice[] = [];
+
+    if (parsed.blockdevices && Array.isArray(parsed.blockdevices)) {
+      for (const dev of parsed.blockdevices) {
+        // Filter out loopback, RAM disks, CD/DVD optical drives
+        if (
+          dev.type === 'loop' || 
+          dev.type === 'rom' || 
+          dev.name.startsWith('loop') || 
+          dev.name.startsWith('ram') || 
+          dev.name.startsWith('sr')
+        ) {
+          continue;
+        }
+
+        // Primary block disks (type === 'disk' or 'nvme')
+        if (dev.type === 'disk' || dev.type === 'nvme' || !dev.children) {
+          const processed = this.processBlockDisk(dev, 'REAL_HARDWARE');
+          if (processed) {
+            devices.push(processed);
+          }
+        }
+      }
     }
 
+    return devices;
+  }
+
+  private processBlockDisk(dev: RawBlockDevice, source: DetectionSource): DiscoveredStorageDevice | null {
     const partitions: PartitionInfo[] = [];
     let isSystemDisk = false;
     let totalUsed = 0;
 
-    if (dev.children && dev.children.length > 0) {
-      for (const child of dev.children) {
-        const isSys = this.checkIfSystemMount(child.mountpoint);
-        if (isSys) isSystemDisk = true;
+    // Check if the physical disk itself is mounted to a system path
+    const diskMount = this.resolveMountPoint(dev);
+    if (this.checkIfSystemMount(diskMount)) {
+      isSystemDisk = true;
+    }
 
-        const partUsed = child.mountpoint ? Math.floor(child.size * 0.3) : 0;
+    if (dev.children && Array.isArray(dev.children) && dev.children.length > 0) {
+      for (const child of dev.children) {
+        // Filter: only inspect partitions
+        if (child.type !== 'part' && child.type !== 'disk') {
+          continue;
+        }
+
+        const partMount = this.resolveMountPoint(child);
+        const isSys = this.checkIfSystemMount(partMount);
+        if (isSys) {
+          isSystemDisk = true;
+        }
+
+        const childSize = Number(child.size) || 0;
+        const partUsed = partMount ? Math.floor(childSize * 0.3) : 0;
         totalUsed += partUsed;
 
         partitions.push({
           name: child.name,
-          path: child.path,
-          size: child.size,
-          filesystem: child.fstype,
-          uuid: child.uuid,
-          label: child.label,
-          mountPoint: child.mountpoint,
+          path: child.path || `/dev/${child.name}`,
+          size: childSize,
+          filesystem: child.fstype || null,
+          uuid: child.uuid || null,
+          label: child.label || null,
+          mountPoint: partMount,
           usedBytes: partUsed,
-          freeBytes: child.size - partUsed,
+          freeBytes: Math.max(0, childSize - partUsed),
           isSystemPartition: isSys,
-          hasExistingData: Boolean(child.mountpoint || child.fstype),
+          hasExistingData: Boolean(partMount || child.fstype),
         });
       }
     } else {
       // Unpartitioned raw drive or single-volume disk
-      const isSys = this.checkIfSystemMount(dev.mountpoint);
-      if (isSys) isSystemDisk = true;
-
-      const diskUsed = dev.mountpoint ? Math.floor(dev.size * 0.25) : 0;
+      const diskSize = Number(dev.size) || 0;
+      const diskUsed = diskMount ? Math.floor(diskSize * 0.25) : 0;
       totalUsed += diskUsed;
 
       if (dev.fstype) {
         partitions.push({
           name: dev.name,
-          path: dev.path,
-          size: dev.size,
-          filesystem: dev.fstype,
-          uuid: dev.uuid,
-          label: dev.label,
-          mountPoint: dev.mountpoint,
+          path: dev.path || `/dev/${dev.name}`,
+          size: diskSize,
+          filesystem: dev.fstype || null,
+          uuid: dev.uuid || null,
+          label: dev.label || null,
+          mountPoint: diskMount,
           usedBytes: diskUsed,
-          freeBytes: dev.size - diskUsed,
-          isSystemPartition: isSys,
-          hasExistingData: Boolean(dev.mountpoint || dev.fstype),
+          freeBytes: Math.max(0, diskSize - diskUsed),
+          isSystemPartition: isSystemDisk,
+          hasExistingData: Boolean(diskMount || dev.fstype),
         });
       }
     }
 
     const uuid = dev.uuid || (partitions[0]?.uuid) || `dev-${dev.name}`;
-    const devType = this.classifyDeviceType(dev);
-    const freeBytes = Math.max(0, dev.size - totalUsed);
+    const totalSize = Number(dev.size) || 0;
+    const freeBytes = Math.max(0, totalSize - totalUsed);
+
+    // Clean hardware metadata - DO NOT FABRICATE MISSING DATA
+    const rawVendor = dev.vendor?.trim() || null;
+    const rawModel = dev.model?.trim() || null;
+    const rawSerial = dev.serial?.trim() || null;
+
+    let deviceModel: string | null = null;
+    if (rawVendor && rawModel) {
+      deviceModel = `${rawVendor} ${rawModel}`;
+    } else if (rawModel) {
+      deviceModel = rawModel;
+    } else if (rawVendor) {
+      deviceModel = rawVendor;
+    } else {
+      deviceModel = null;
+    }
+
+    // Hardware classification based on ROTA, TRAN, RM
+    const { deviceType, transport } = this.classifyDeviceHardware(dev);
 
     return {
       deviceName: dev.name,
-      devicePath: dev.path,
-      deviceModel: dev.model?.trim() || `${dev.vendor || 'Generic'} Storage Device`,
-      vendor: dev.vendor?.trim() || null,
-      model: dev.model?.trim() || null,
-      serial: dev.serial?.trim() || null,
-      deviceType: devType,
+      devicePath: dev.path || `/dev/${dev.name}`,
+      deviceModel: deviceModel,
+      vendor: rawVendor,
+      model: rawModel,
+      serial: rawSerial,
+      deviceType: deviceType,
+      transport: transport,
+      detectionSource: source,
       filesystem: dev.fstype || partitions[0]?.filesystem || null,
       uuid: uuid,
-      totalBytes: dev.size,
+      totalBytes: totalSize,
       usedBytes: totalUsed,
       freeBytes: freeBytes,
-      mountPoint: dev.mountpoint || partitions[0]?.mountPoint || null,
+      mountPoint: diskMount || partitions[0]?.mountPoint || null,
       isRemovable: Boolean(dev.rm || dev.hotplug),
       isRotational: Boolean(dev.rota),
       isReadOnly: Boolean(dev.ro),
       isSystemDisk: isSystemDisk,
       hasExistingData: partitions.some((p) => p.hasExistingData),
       isCloudStorage: false,
+      isSimulated: source === 'SIMULATION',
       status: isSystemDisk ? 'INSPECTED' : 'AVAILABLE',
       partitions: partitions,
       lastSeenAt: new Date().toISOString(),
     };
+  }
+
+  private resolveMountPoint(dev: RawBlockDevice): string | null {
+    if (dev.mountpoint && typeof dev.mountpoint === 'string') {
+      return dev.mountpoint.trim() || null;
+    }
+    if (dev.mountpoints && Array.isArray(dev.mountpoints)) {
+      const valid = dev.mountpoints.find((m) => m && typeof m === 'string' && m.trim().length > 0);
+      if (valid) return valid.trim();
+    }
+    return null;
   }
 
   private checkIfSystemMount(mountPoint: string | null): boolean {
@@ -156,32 +245,53 @@ export class StorageDetector {
     );
   }
 
-  private classifyDeviceType(dev: RawBlockDevice): DeviceType {
-    const name = dev.name.toLowerCase();
-    const model = (dev.model || '').toLowerCase();
+  /**
+   * Real hardware classification based on ROTA, TRAN, and RM fields.
+   * Avoids guessing SSD vs HDD based on device name or arbitrary sizes.
+   */
+  private classifyDeviceHardware(dev: RawBlockDevice): { deviceType: DeviceType; transport: StorageTransport } {
+    const tranLower = (dev.tran || '').toLowerCase();
+    const nameLower = dev.name.toLowerCase();
 
-    if (name.startsWith('nvme')) {
-      return 'NVME';
+    // 1. Determine transport
+    let transport: StorageTransport = 'Unknown';
+    if (tranLower === 'usb') {
+      transport = 'USB';
+    } else if (tranLower === 'nvme' || nameLower.startsWith('nvme')) {
+      transport = 'NVMe';
+    } else if (tranLower === 'sata' || tranLower === 'ata') {
+      transport = 'SATA';
+    } else if (tranLower === 'scsi') {
+      transport = 'SCSI';
     }
-    if (dev.hotplug || dev.rm || model.includes('usb') || model.includes('flash') || model.includes('portable')) {
-      if (model.includes('ssd') || dev.size > 250_000_000_000) {
-        return 'USB_SSD';
+
+    // 2. Determine deviceType
+    let deviceType: DeviceType = 'UNKNOWN';
+
+    if (transport === 'NVMe' || nameLower.startsWith('nvme')) {
+      deviceType = 'NVME';
+    } else if (transport === 'USB' || dev.rm) {
+      if (dev.rota === false) {
+        deviceType = 'USB_SSD';
+      } else if (dev.rota === true) {
+        deviceType = 'USB_HDD';
+      } else if (dev.rm) {
+        deviceType = 'USB_FLASH';
+      } else {
+        deviceType = 'UNKNOWN';
       }
-      if (dev.size > 500_000_000_000 || dev.rota) {
-        return 'USB_HDD';
+    } else {
+      // Internal disk
+      if (dev.rota === false) {
+        deviceType = 'INTERNAL_SSD';
+      } else if (dev.rota === true) {
+        deviceType = 'INTERNAL_HDD';
+      } else {
+        deviceType = 'UNKNOWN';
       }
-      return 'USB_FLASH';
     }
-    if (model.includes('ssd') || dev.rota === false) {
-      return 'INTERNAL_SSD';
-    }
-    return 'INTERNAL_HDD';
-  }
 
-  private simulatedDevices: DiscoveredStorageDevice[] = [];
-
-  constructor() {
-    this.resetSimulatedDevices();
+    return { deviceType, transport };
   }
 
   public resetSimulatedDevices(): void {
@@ -207,8 +317,8 @@ export class StorageDetector {
   }
 
   /**
-   * Simulated device catalog for macOS/Windows development mode
-   * Clearly labeled with [SIMULATED DEVICE] and rich partition trees.
+   * Simulated device catalog for macOS/Windows development mode.
+   * Clearly marked with detectionSource: 'SIMULATION'.
    */
   public getSimulatedDevices(): DiscoveredStorageDevice[] {
     if (this.simulatedDevices.length === 0) {
@@ -227,6 +337,8 @@ export class StorageDetector {
         model: '980 PRO 250GB',
         serial: 'S5GXNF0R123456',
         deviceType: 'NVME',
+        transport: 'NVMe',
+        detectionSource: 'SIMULATION',
         filesystem: 'ext4',
         uuid: 'sys-nvme-0000-0000-000000000001',
         totalBytes: 250_000_000_000,
@@ -279,6 +391,8 @@ export class StorageDetector {
         model: 'Expansion Portable',
         serial: 'NA987654321',
         deviceType: 'USB_HDD',
+        transport: 'USB',
+        detectionSource: 'SIMULATION',
         filesystem: 'ext4',
         uuid: 'b5c3d2e1-2222-5555-9999-000000000002',
         totalBytes: 1_000_000_000_000,
@@ -289,10 +403,10 @@ export class StorageDetector {
         isRotational: true,
         isReadOnly: false,
         isSystemDisk: false,
-        hasExistingData: true, // Existing user media detected
-        isCloudStorage: true,
+        hasExistingData: true,
+        isCloudStorage: false,
         isSimulated: true,
-        status: 'ACTIVE',
+        status: 'AVAILABLE',
         partitions: [
           {
             name: 'sdb1',
@@ -318,6 +432,8 @@ export class StorageDetector {
         model: 'Extreme SSD',
         serial: 'SDSSDE61-512G',
         deviceType: 'USB_SSD',
+        transport: 'USB',
+        detectionSource: 'SIMULATION',
         filesystem: 'ext4',
         uuid: 'c6d4e3f2-3333-6666-aaaa-000000000003',
         totalBytes: 512_000_000_000,
@@ -370,6 +486,8 @@ export class StorageDetector {
         model: 'DataTraveler 3.0',
         serial: '001A4D5E6F7G',
         deviceType: 'USB_FLASH',
+        transport: 'USB',
+        detectionSource: 'SIMULATION',
         filesystem: 'vfat',
         uuid: 'd7e5f403-4444-7777-bbbb-000000000004',
         totalBytes: 128_000_000_000,

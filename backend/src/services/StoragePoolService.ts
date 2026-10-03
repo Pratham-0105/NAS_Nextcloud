@@ -20,10 +20,8 @@ export interface StorageEventPayload {
 
 export class StoragePoolService {
   private detector: StorageDetector;
-  // Fallback in-memory set if DB is temporarily offline or in tests
-  private registeredDeviceIds: Set<string> = new Set([
-    'b5c3d2e1-2222-5555-9999-000000000002', // Seagate Expansion 1TB
-  ]);
+  // Dynamic set of registered UUIDs backed by database (starts empty, no hardcoded devices)
+  private registeredDeviceIds: Set<string> = new Set();
 
   private eventListeners: ((event: StorageEventPayload) => void)[] = [];
   private knownDevices: Map<string, DiscoveredStorageDevice> = new Map();
@@ -31,7 +29,23 @@ export class StoragePoolService {
 
   constructor(detector: StorageDetector) {
     this.detector = detector;
+    this.initDatabaseState();
     this.startHardwarePolling();
+  }
+
+  private async initDatabaseState(): Promise<void> {
+    try {
+      const dbDevices = await prisma.storageDevice.findMany({
+        where: { isCloudStorage: true },
+        select: { uuid: true },
+      });
+      for (const d of dbDevices) {
+        this.registeredDeviceIds.add(d.uuid);
+      }
+      logger.info(`[STORAGE POOL] Loaded ${this.registeredDeviceIds.size} registered cloud devices from database.`);
+    } catch {
+      // In-memory fallback if DB is booting
+    }
   }
 
   public onEvent(callback: (event: StorageEventPayload) => void): void {
@@ -85,7 +99,14 @@ export class StoragePoolService {
    * Detects new or removed hardware devices and updates database/events
    */
   public async pollDevices(): Promise<DiscoveredStorageDevice[]> {
-    const currentList = await this.detector.discoverDevices();
+    let currentList: DiscoveredStorageDevice[] = [];
+    try {
+      currentList = await this.detector.discoverDevices();
+    } catch (err: any) {
+      logger.error(`[STORAGE DETECTOR] Hardware discovery error: ${err.message}`);
+      return [];
+    }
+
     const currentMap = new Map<string, DiscoveredStorageDevice>();
 
     for (const dev of currentList) {
@@ -95,7 +116,7 @@ export class StoragePoolService {
       if (this.knownDevices.size > 0 && !this.knownDevices.has(dev.uuid)) {
         this.emitEvent(
           'storage.device.detected',
-          `New storage device detected: ${dev.deviceModel} (${dev.deviceName}) [${dev.filesystem || 'raw'}]`,
+          `New storage device detected: ${dev.deviceModel || dev.deviceName} (${dev.deviceName}) [${dev.filesystem || 'raw'}]`,
           dev
         );
       }
@@ -108,13 +129,13 @@ export class StoragePoolService {
         if (isReg) {
           this.emitEvent(
             'storage.device.unavailable',
-            `CRITICAL: Registered storage device ${prevDev.deviceModel} (${prevDev.deviceName}) disconnected or unavailable. Check physical connection.`,
+            `CRITICAL: Registered storage device ${prevDev.deviceModel || prevDev.deviceName} (${prevDev.deviceName}) disconnected or unavailable. Check physical connection.`,
             prevDev
           );
         } else {
           this.emitEvent(
             'storage.device.removed',
-            `Storage device disconnected: ${prevDev.deviceModel} (${prevDev.deviceName})`,
+            `Storage device disconnected: ${prevDev.deviceModel || prevDev.deviceName} (${prevDev.deviceName})`,
             prevDev
           );
         }
@@ -132,6 +153,18 @@ export class StoragePoolService {
     }
 
     this.knownDevices = currentMap;
+
+    try {
+      const dbDevices = await prisma.storageDevice.findMany({
+        where: { isCloudStorage: true },
+        select: { uuid: true },
+      });
+      for (const d of dbDevices) {
+        this.registeredDeviceIds.add(d.uuid);
+      }
+    } catch {
+      // ignore
+    }
 
     // Persist discovered devices into PostgreSQL database
     for (const dev of currentList) {
@@ -153,6 +186,8 @@ export class StoragePoolService {
             model: dev.model,
             serial: dev.serial,
             deviceType: dev.deviceType as any,
+            transport: dev.transport,
+            detectionSource: dev.detectionSource,
             filesystem: dev.filesystem,
             totalBytes: BigInt(dev.totalBytes),
             usedBytes: BigInt(dev.usedBytes),
@@ -176,6 +211,8 @@ export class StoragePoolService {
             model: dev.model,
             serial: dev.serial,
             deviceType: dev.deviceType as any,
+            transport: dev.transport,
+            detectionSource: dev.detectionSource,
             filesystem: dev.filesystem,
             uuid: dev.uuid,
             totalBytes: BigInt(dev.totalBytes),
@@ -204,10 +241,20 @@ export class StoragePoolService {
    * Returns all discovered devices merged with registration states
    */
   public async getDevices(): Promise<DiscoveredStorageDevice[]> {
+    try {
+      const dbDevices = await prisma.storageDevice.findMany({
+        where: { isCloudStorage: true },
+        select: { uuid: true },
+      });
+      this.registeredDeviceIds = new Set(dbDevices.map((d) => d.uuid));
+    } catch {
+      // fallback to in-memory set
+    }
+
     const rawDevices = await this.detector.discoverDevices();
 
     return rawDevices.map((dev) => {
-      const isRegistered = this.registeredDeviceIds.has(dev.uuid);
+      const isRegistered = this.registeredDeviceIds.has(dev.uuid) && !dev.isSystemDisk;
       let status: DeviceStatus = dev.status;
 
       if (dev.isSystemDisk) {
@@ -338,7 +385,11 @@ export class StoragePoolService {
       // ignore if DB is offline
     }
 
-    this.emitEvent('storage.device.registered', `Device ${device.deviceModel} (${device.deviceName}) registered for cloud storage.`, updated);
+    this.emitEvent(
+      'storage.device.registered',
+      `Device ${device.deviceModel || device.deviceName} (${device.deviceName}) registered for cloud storage.`,
+      updated
+    );
 
     return updated;
   }
@@ -383,7 +434,11 @@ export class StoragePoolService {
       // ignore
     }
 
-    this.emitEvent('storage.device.removed', `Device ${device.deviceModel} (${device.deviceName}) unregistered from cloud storage.`, updated);
+    this.emitEvent(
+      'storage.device.removed',
+      `Device ${device.deviceModel || device.deviceName} (${device.deviceName}) unregistered from cloud storage.`,
+      updated
+    );
 
     return updated;
   }
