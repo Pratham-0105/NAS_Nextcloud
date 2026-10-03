@@ -20,7 +20,9 @@ import {
   CheckCircle,
   Eye,
   FolderPlus,
-  RefreshCw
+  RefreshCw,
+  AlertCircle,
+  AlertTriangle
 } from 'lucide-react';
 
 interface FileItem {
@@ -45,35 +47,26 @@ export default function UserCloudPortal() {
 
   // Real Physical Disk & Quota State
   const [quota, setQuota] = useState<{ usedStr: string; totalStr: string; freeStr: string; percent: number }>({
-    usedStr: '75.5 MB',
-    totalStr: '123.0 GB',
-    freeStr: '122.9 GB',
-    percent: 1,
+    usedStr: '0 MB',
+    totalStr: 'Detecting Storage...',
+    freeStr: '...',
+    percent: 0,
   });
 
   const [diskInfo, setDiskInfo] = useState<{
     name: string;
     label: string;
     device: string;
-    mountPoint: string;
+    mountPoint: string | null;
     filesystem: string;
     freeStr: string;
     totalStr: string;
     usedStr: string;
     isPhysical: boolean;
+    isMounted?: boolean;
+    isConnected?: boolean;
     status: string;
-  } | null>({
-    name: 'SanDisk 3.2Gen1',
-    label: 'CloudNAS',
-    device: 'disk12',
-    mountPoint: '/Volumes/CloudNAS',
-    filesystem: 'ExFAT',
-    freeStr: '122.9 GB',
-    totalStr: '123.0 GB',
-    usedStr: '75.5 MB',
-    isPhysical: true,
-    status: 'ONLINE',
-  });
+  } | null>(null);
 
   const [poolInfo, setPoolInfo] = useState<{
     name: string;
@@ -89,8 +82,8 @@ export default function UserCloudPortal() {
     return joined ? `/${joined}` : '/';
   }, [currentFolder]);
 
-  const fetchCloudFiles = useCallback(async () => {
-    setLoading(true);
+  const fetchCloudFiles = useCallback(async (isPolling = false) => {
+    if (!isPolling) setLoading(true);
     const folderPath = getFolderPath();
     const apiUrl = process.env.NEXT_PUBLIC_USER_API_URL || 'http://localhost:4001/api';
 
@@ -119,7 +112,7 @@ export default function UserCloudPortal() {
         }
       }
 
-      // Fetch Real Quota & Connected Physical Disk Info
+      // Fetch Real Quota & Connected Physical Disk Info in real time
       const quotaRes = await fetch(`${apiUrl}/files/quota?user=clouduser`);
       if (quotaRes.ok) {
         const quotaData = await quotaRes.json();
@@ -135,36 +128,31 @@ export default function UserCloudPortal() {
         });
 
         if (quotaData.disk) {
-          setDiskInfo(quotaData.disk);
-        } else if (quotaData.pool?.members?.[0]) {
-          const m = quotaData.pool.members[0];
+          const isConnected = quotaData.isStorageConnected ?? (quotaData.disk.status === 'ONLINE' && quotaData.disk.isConnected !== false);
           setDiskInfo({
-            name: m.model || m.name || 'SanDisk 3.2Gen1',
-            label: 'CloudNAS',
-            device: m.name || 'disk12',
-            mountPoint: '/Volumes/CloudNAS',
-            filesystem: 'ExFAT',
-            freeStr: `${freeGb} GB`,
-            totalStr: `${totalGb} GB`,
-            usedStr: usedStr,
-            isPhysical: true,
-            status: 'ONLINE',
+            ...quotaData.disk,
+            isConnected,
           });
         }
 
-        if (quotaData.pool && quotaData.pool.isConnected) {
+        if (quotaData.pool) {
           setPoolInfo(quotaData.pool);
         }
       }
     } catch {
       // Fallback
     } finally {
-      setLoading(false);
+      if (!isPolling) setLoading(false);
     }
   }, [getFolderPath]);
 
   useEffect(() => {
     fetchCloudFiles();
+    // Live hardware status polling every 3 seconds for instant hot-plug / ejection responsiveness
+    const timer = setInterval(() => {
+      fetchCloudFiles(true);
+    }, 3000);
+    return () => clearInterval(timer);
   }, [fetchCloudFiles]);
 
   const photos = files.filter(f => f.type === 'image');
@@ -172,6 +160,13 @@ export default function UserCloudPortal() {
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+
+    // Hardware Safety Guard: prevent uploading when drive is disconnected / ejected
+    if (diskInfo && (diskInfo.isConnected === false || diskInfo.status === 'DISCONNECTED')) {
+      alert('⚠️ Cannot upload file: The physical CloudNAS storage drive is disconnected or ejected. Please reconnect your drive first.');
+      if (e.target) e.target.value = '';
+      return;
+    }
 
     setUploadProgress(15);
     const interval = setInterval(() => {
@@ -195,10 +190,14 @@ export default function UserCloudPortal() {
 
       if (res.ok) {
         fetchCloudFiles();
+      } else {
+        const errData = await res.json().catch(() => null);
+        alert(errData?.error || 'Upload failed');
       }
-    } catch {
+    } catch (err: any) {
       clearInterval(interval);
       setUploadProgress(null);
+      alert(`Upload error: ${err.message || 'Network request failed'}`);
     }
   };
 
@@ -332,37 +331,67 @@ export default function UserCloudPortal() {
         </div>
 
         {/* Real Physical Disk & Available Space Widget */}
-        <div className="bg-[#161f36] border border-slate-800 p-4 rounded-2xl shadow-lg">
+        <div className={`border p-4 rounded-2xl shadow-lg transition ${
+          diskInfo && (diskInfo.isConnected === false || diskInfo.status === 'DISCONNECTED')
+            ? 'bg-[#1e131d] border-rose-900/60'
+            : 'bg-[#161f36] border-slate-800'
+        }`}>
           {/* Header */}
           <div className="flex items-center justify-between text-xs text-slate-400 mb-2.5">
             <div className="flex items-center gap-1.5">
-              <HardDrive className="h-4 w-4 text-blue-400" />
+              <HardDrive className={`h-4 w-4 ${
+                diskInfo && (diskInfo.isConnected === false || diskInfo.status === 'DISCONNECTED') ? 'text-rose-400' : 'text-blue-400'
+              }`} />
               <span className="font-semibold text-slate-200 truncate max-w-[130px]" title={diskInfo?.name || 'SanDisk 3.2Gen1'}>
-                {diskInfo?.name || 'SanDisk 3.2Gen1'}
+                {diskInfo?.name || 'CloudNAS'}
               </span>
             </div>
-            <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 font-medium">
-              Physical Disk
-            </span>
+            {diskInfo && (diskInfo.isConnected === false || diskInfo.status === 'DISCONNECTED') ? (
+              <span className="text-[10px] px-2 py-0.5 rounded-full bg-rose-500/10 text-rose-400 border border-rose-500/30 font-medium">
+                Ejected / Offline
+              </span>
+            ) : (
+              <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 font-medium">
+                Physical Disk
+              </span>
+            )}
           </div>
 
           {/* Available Space - Large Highlight */}
           <div className="mb-2.5">
-            <div className="text-xl font-bold text-slate-100 flex items-baseline justify-between">
-              <span>{diskInfo?.freeStr || quota.freeStr}</span>
-              <span className="text-xs font-medium text-emerald-400">Available Free</span>
-            </div>
-            <div className="text-[11px] text-slate-400 flex justify-between mt-1">
-              <span>{quota.usedStr} used</span>
-              <span className="text-slate-300 font-medium">{quota.totalStr} Total</span>
-            </div>
+            {diskInfo && (diskInfo.isConnected === false || diskInfo.status === 'DISCONNECTED') ? (
+              <div>
+                <div className="text-base font-bold text-rose-300 flex items-center gap-1.5">
+                  <AlertCircle className="h-4 w-4 text-rose-400 flex-shrink-0" />
+                  Disk Disconnected
+                </div>
+                <p className="text-[11px] text-rose-300/80 mt-1 leading-snug">
+                  CloudNAS drive was ejected. Reconnect USB drive to store files.
+                </p>
+              </div>
+            ) : (
+              <>
+                <div className="text-xl font-bold text-slate-100 flex items-baseline justify-between">
+                  <span>{diskInfo?.freeStr || quota.freeStr}</span>
+                  <span className="text-xs font-medium text-emerald-400">Available Free</span>
+                </div>
+                <div className="text-[11px] text-slate-400 flex justify-between mt-1">
+                  <span>{quota.usedStr} used</span>
+                  <span className="text-slate-300 font-medium">{quota.totalStr} Total</span>
+                </div>
+              </>
+            )}
           </div>
 
           {/* Progress Bar */}
           <div className="w-full bg-slate-800 h-2 rounded-full overflow-hidden">
             <div
-              className="bg-gradient-to-r from-blue-500 via-indigo-500 to-emerald-400 h-2 rounded-full transition-all duration-500"
-              style={{ width: `${Math.max(2, quota.percent)}%` }}
+              className={`h-2 rounded-full transition-all duration-500 ${
+                diskInfo && (diskInfo.isConnected === false || diskInfo.status === 'DISCONNECTED')
+                  ? 'bg-rose-500/40 w-full'
+                  : 'bg-gradient-to-r from-blue-500 via-indigo-500 to-emerald-400'
+              }`}
+              style={{ width: diskInfo && (diskInfo.isConnected === false || diskInfo.status === 'DISCONNECTED') ? '100%' : `${Math.max(2, quota.percent)}%` }}
             />
           </div>
 
@@ -370,12 +399,20 @@ export default function UserCloudPortal() {
           <div className="mt-3 pt-2.5 border-t border-slate-800/80 text-[10px] text-slate-400 flex flex-col gap-1.5">
             <div className="flex items-center justify-between">
               <span className="text-slate-400">Disk Volume:</span>
-              <span className="text-slate-200 font-medium">{diskInfo?.device || 'disk12'} ({diskInfo?.label || 'CloudNAS'})</span>
+              <span className={diskInfo && (diskInfo.isConnected === false || diskInfo.status === 'DISCONNECTED') ? 'text-rose-400 font-medium' : 'text-slate-200 font-medium'}>
+                {diskInfo?.device || 'disk12'} ({diskInfo?.label || 'CloudNAS'})
+              </span>
             </div>
             <div className="flex items-center justify-between">
-              <span className="text-slate-400">Stored At:</span>
-              <span className="text-emerald-400 font-mono font-medium truncate max-w-[125px]" title={diskInfo?.mountPoint || '/Volumes/CloudNAS'}>
-                {diskInfo?.mountPoint || '/Volumes/CloudNAS'}
+              <span className="text-slate-400">Hardware Status:</span>
+              <span className={`font-mono font-medium truncate max-w-[125px] ${
+                diskInfo && (diskInfo.isConnected === false || diskInfo.status === 'DISCONNECTED')
+                  ? 'text-rose-400 font-bold'
+                  : 'text-emerald-400'
+              }`}>
+                {diskInfo && (diskInfo.isConnected === false || diskInfo.status === 'DISCONNECTED')
+                  ? 'DISCONNECTED'
+                  : (diskInfo?.mountPoint || '/Volumes/CloudNAS')}
               </span>
             </div>
           </div>
@@ -401,18 +438,34 @@ export default function UserCloudPortal() {
           {/* View Toggles & Actions */}
           <div className="flex items-center gap-3">
             {/* Active Physical Disk Badge */}
-            <div className="hidden sm:flex items-center gap-2.5 px-3 py-1.5 bg-slate-800/80 border border-slate-700/80 rounded-xl text-xs">
-              <div className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
-              <div className="flex flex-col text-left">
-                <span className="font-semibold text-slate-200 flex items-center gap-1.5 text-xs truncate max-w-[160px]">
-                  <HardDrive className="h-3.5 w-3.5 text-blue-400" />
-                  {diskInfo?.name || 'SanDisk 3.2Gen1'}
-                </span>
-                <span className="text-[10px] text-emerald-400 font-medium">
-                  {diskInfo?.freeStr || quota.freeStr} Available
-                </span>
+            {diskInfo && (
+              <div className={`hidden sm:flex items-center gap-2.5 px-3 py-1.5 rounded-xl text-xs border transition ${
+                diskInfo.isConnected !== false && diskInfo.status === 'ONLINE'
+                  ? 'bg-slate-800/80 border-slate-700/80'
+                  : 'bg-rose-950/40 border-rose-500/50 text-rose-200'
+              }`}>
+                <div className={`h-2 w-2 rounded-full ${
+                  diskInfo.isConnected !== false && diskInfo.status === 'ONLINE'
+                    ? 'bg-emerald-400 animate-pulse'
+                    : 'bg-rose-500 animate-ping'
+                }`} />
+                <div className="flex flex-col text-left">
+                  <span className="font-semibold text-slate-200 flex items-center gap-1.5 text-xs truncate max-w-[160px]">
+                    <HardDrive className={`h-3.5 w-3.5 ${
+                      diskInfo.isConnected !== false && diskInfo.status === 'ONLINE' ? 'text-blue-400' : 'text-rose-400'
+                    }`} />
+                    {diskInfo.name || 'SanDisk 3.2Gen1'}
+                  </span>
+                  <span className={`text-[10px] font-medium ${
+                    diskInfo.isConnected !== false && diskInfo.status === 'ONLINE' ? 'text-emerald-400' : 'text-rose-400 font-semibold'
+                  }`}>
+                    {diskInfo.isConnected !== false && diskInfo.status === 'ONLINE'
+                      ? `${diskInfo.freeStr || quota.freeStr} Available`
+                      : '⚠️ Ejected / Offline'}
+                  </span>
+                </div>
               </div>
-            </div>
+            )}
 
             <button
               onClick={() => fetchCloudFiles()}
@@ -458,6 +511,26 @@ export default function UserCloudPortal() {
 
         {/* Content Explorer */}
         <main className="flex-1 overflow-y-auto p-4 md:p-8">
+          {/* Physical Disk Disconnected Alert Banner */}
+          {diskInfo && (diskInfo.isConnected === false || diskInfo.status === 'DISCONNECTED') && (
+            <div className="mb-6 p-4 rounded-2xl bg-rose-500/10 border border-rose-500/30 flex items-center justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 rounded-xl bg-rose-500/20 text-rose-400">
+                  <AlertCircle className="h-5 w-5" />
+                </div>
+                <div>
+                  <h4 className="text-sm font-semibold text-rose-200">Physical Storage Disk Ejected</h4>
+                  <p className="text-xs text-rose-300/80 mt-0.5">
+                    The external storage drive &quot;{diskInfo?.name || 'CloudNAS'}&quot; is not mounted. Reconnect your drive to resume synchronization and uploads.
+                  </p>
+                </div>
+              </div>
+              <span className="text-[11px] px-3 py-1 rounded-lg bg-rose-500/20 text-rose-300 border border-rose-500/30 font-semibold whitespace-nowrap">
+                Offline Mode
+              </span>
+            </div>
+          )}
+
           {/* Breadcrumb Path */}
           <div className="flex items-center gap-1 text-sm text-slate-400 mb-6 font-medium">
             <button

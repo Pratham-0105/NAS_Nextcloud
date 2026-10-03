@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { execSync } from 'node:child_process';
 import { Router, Request, Response } from 'express';
 import multer from 'multer';
 import { NextcloudService } from '../services/NextcloudService.js';
@@ -9,14 +10,103 @@ import { poolService } from './storage.routes.js';
 const router = Router();
 const ncService = new NextcloudService();
 
+export interface PhysicalStorageCheckResult {
+  connected: boolean;
+  isMounted: boolean;
+  mountPoint: string | null;
+  device: string | null;
+  label: string;
+  status: 'ONLINE' | 'DISCONNECTED';
+}
+
+/**
+ * Checks in real time whether the designated physical cloud storage drive is currently connected and mounted.
+ */
+export function checkPhysicalStorageLive(): PhysicalStorageCheckResult {
+  if (process.platform === 'darwin') {
+    const mountPath = '/Volumes/CloudNAS';
+    if (!fs.existsSync(mountPath)) {
+      return {
+        connected: false,
+        isMounted: false,
+        mountPoint: null,
+        device: 'disk12',
+        label: 'CloudNAS',
+        status: 'DISCONNECTED',
+      };
+    }
+
+    try {
+      const out = execSync(`/usr/sbin/diskutil info "${mountPath}"`, { encoding: 'utf8', timeout: 2000 });
+      const isMounted = out.includes('Mounted:                   Yes') || out.includes('Mounted: Yes');
+      return {
+        connected: isMounted,
+        isMounted,
+        mountPoint: isMounted ? mountPath : null,
+        device: 'disk12',
+        label: 'CloudNAS',
+        status: isMounted ? 'ONLINE' : 'DISCONNECTED',
+      };
+    } catch {
+      return {
+        connected: false,
+        isMounted: false,
+        mountPoint: null,
+        device: 'disk12',
+        label: 'CloudNAS',
+        status: 'DISCONNECTED',
+      };
+    }
+  }
+
+  if (process.platform === 'linux') {
+    const mountPath = '/mnt/storage_pool';
+    if (!fs.existsSync(mountPath)) {
+      return {
+        connected: false,
+        isMounted: false,
+        mountPoint: null,
+        device: 'storage_pool',
+        label: 'CloudNAS',
+        status: 'DISCONNECTED',
+      };
+    }
+    try {
+      const mounts = fs.readFileSync('/proc/mounts', 'utf8');
+      const isMounted = mounts.includes(mountPath);
+      return {
+        connected: isMounted,
+        isMounted,
+        mountPoint: isMounted ? mountPath : null,
+        device: 'storage_pool',
+        label: 'CloudNAS',
+        status: isMounted ? 'ONLINE' : 'DISCONNECTED',
+      };
+    } catch {
+      return {
+        connected: false,
+        isMounted: false,
+        mountPoint: null,
+        device: 'storage_pool',
+        label: 'CloudNAS',
+        status: 'DISCONNECTED',
+      };
+    }
+  }
+
+  return {
+    connected: false,
+    isMounted: false,
+    mountPoint: null,
+    device: null,
+    label: 'CloudNAS',
+    status: 'DISCONNECTED',
+  };
+}
+
 function getPhysicalStorageMount(): string | null {
-  if (process.platform === 'darwin' && fs.existsSync('/Volumes/CloudNAS')) {
-    return '/Volumes/CloudNAS';
-  }
-  if (process.platform === 'linux' && fs.existsSync('/mnt/storage_pool')) {
-    return '/mnt/storage_pool';
-  }
-  return null;
+  const live = checkPhysicalStorageLive();
+  return live.connected ? live.mountPoint : null;
 }
 
 // Configure Multer memory storage with 500MB limit
@@ -68,6 +158,19 @@ router.get('/', listHandler);
 router.post('/upload', upload.single('file'), async (req: Request, res: Response): Promise<void> => {
   if (!req.file) {
     res.status(400).json({ success: false, error: 'No file attached in upload request' });
+    return;
+  }
+
+  // Real-time Hardware Guard: Verify physical storage disk is connected and mounted
+  const liveStatus = checkPhysicalStorageLive();
+  if (!liveStatus.connected) {
+    logger.warn('[UPLOAD BLOCKED] Upload attempted while physical storage disk is ejected or disconnected');
+    res.status(503).json({
+      success: false,
+      error: 'Physical cloud storage disk is disconnected / ejected. Please reconnect your CloudNAS drive to upload files.',
+      code: 'STORAGE_DISK_DISCONNECTED',
+      diskStatus: liveStatus.status,
+    });
     return;
   }
 
@@ -282,18 +385,20 @@ router.get('/quota', async (req: Request, res: Response): Promise<void> => {
       // fallback to raw quota if pool service unavailable
     }
 
+    const liveStatus = checkPhysicalStorageLive();
+
     if (activePool && activePool.totalBytes > 0) {
       // Synchronize Nextcloud user quota to match the physical storage pool
       ncService.setUserQuota(username, activePool.totalBytes).catch(() => {});
 
       const poolTotal = activePool.totalBytes;
       const poolUsed = quota.used;
-      const poolFree = Math.max(0, poolTotal - poolUsed);
-      const poolRelative = poolTotal > 0 ? Math.min(100, Math.round((poolUsed / poolTotal) * 100)) : 0;
+      const poolFree = liveStatus.connected ? Math.max(0, poolTotal - poolUsed) : 0;
+      const poolRelative = poolTotal > 0 && liveStatus.connected ? Math.min(100, Math.round((poolUsed / poolTotal) * 100)) : 0;
 
       const diskModel = activePool.members?.[0]?.model || activePool.members?.[0]?.deviceModel || 'SanDisk 3.2Gen1';
       const diskLabel = 'CloudNAS';
-      const mountLocation = getPhysicalStorageMount() || '/Volumes/CloudNAS';
+      const mountLocation = liveStatus.mountPoint;
       const freeGb = (poolFree / 1e9).toFixed(1);
       const totalGb = (poolTotal / 1e9).toFixed(1);
       const usedStr = poolUsed > 1e9 ? `${(poolUsed / 1e9).toFixed(2)} GB` : `${(poolUsed / 1e6).toFixed(1)} MB`;
@@ -301,6 +406,7 @@ router.get('/quota', async (req: Request, res: Response): Promise<void> => {
       res.json({
         success: true,
         username,
+        isStorageConnected: liveStatus.connected,
         quota: {
           used: poolUsed,
           free: poolFree,
@@ -308,9 +414,9 @@ router.get('/quota', async (req: Request, res: Response): Promise<void> => {
           relative: poolRelative,
           quota: String(poolTotal),
           usedStr: usedStr,
-          freeStr: `${freeGb} GB`,
+          freeStr: liveStatus.connected ? `${freeGb} GB` : '0 B (Ejected)',
           totalStr: `${totalGb} GB`,
-          freeFormatted: `${freeGb} GB available`,
+          freeFormatted: liveStatus.connected ? `${freeGb} GB available` : 'Disk Disconnected / Ejected',
         },
         disk: {
           name: diskModel,
@@ -318,16 +424,18 @@ router.get('/quota', async (req: Request, res: Response): Promise<void> => {
           device: activePool.members?.[0]?.name || activePool.members?.[0]?.deviceName || 'disk12',
           mountPoint: mountLocation,
           filesystem: 'ExFAT',
-          freeStr: `${freeGb} GB`,
+          freeStr: liveStatus.connected ? `${freeGb} GB` : '0 B (Ejected)',
           totalStr: `${totalGb} GB`,
           usedStr: usedStr,
           isPhysical: true,
-          status: 'ONLINE',
+          isMounted: liveStatus.isMounted,
+          isConnected: liveStatus.connected,
+          status: liveStatus.status, // 'ONLINE' or 'DISCONNECTED'
         },
         pool: {
           id: activePool.id,
           name: activePool.name,
-          status: activePool.status,
+          status: liveStatus.connected ? activePool.status : 'OFFLINE',
           totalBytes: poolTotal,
           usedBytes: poolUsed,
           freeBytes: poolFree,
@@ -336,8 +444,9 @@ router.get('/quota', async (req: Request, res: Response): Promise<void> => {
             name: m.deviceName || m.name,
             model: m.deviceModel || m.model,
             size: m.totalBytes || m.size,
+            status: liveStatus.connected ? 'ONLINE' : 'DISCONNECTED',
           })),
-          isConnected: true,
+          isConnected: liveStatus.connected,
         },
       });
       return;
