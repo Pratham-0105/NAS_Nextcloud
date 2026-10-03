@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import path from 'node:path';
 import { Router, Request, Response } from 'express';
 import multer from 'multer';
@@ -7,6 +8,16 @@ import { poolService } from './storage.routes.js';
 
 const router = Router();
 const ncService = new NextcloudService();
+
+function getPhysicalStorageMount(): string | null {
+  if (process.platform === 'darwin' && fs.existsSync('/Volumes/CloudNAS')) {
+    return '/Volumes/CloudNAS';
+  }
+  if (process.platform === 'linux' && fs.existsSync('/mnt/storage_pool')) {
+    return '/mnt/storage_pool';
+  }
+  return null;
+}
 
 // Configure Multer memory storage with 500MB limit
 const upload = multer({
@@ -68,6 +79,21 @@ router.post('/upload', upload.single('file'), async (req: Request, res: Response
 
   try {
     await ncService.uploadFile(username, password, remotePath, req.file.buffer);
+
+    // Synchronize to physical storage device if connected
+    const mount = getPhysicalStorageMount();
+    if (mount) {
+      try {
+        const localDestDir = path.join(mount, targetFolder.replace(/^\/+/, ''));
+        if (!fs.existsSync(localDestDir)) {
+          fs.mkdirSync(localDestDir, { recursive: true });
+        }
+        fs.writeFileSync(path.join(localDestDir, fileName), req.file.buffer);
+        logger.info(`[PHYSICAL SYNC] Wrote uploaded file "${fileName}" directly to physical drive (${mount})`);
+      } catch (err: any) {
+        logger.warn(`[PHYSICAL SYNC] Warning writing to physical storage: ${err.message}`);
+      }
+    }
 
     res.status(201).json({
       success: true,
@@ -133,6 +159,20 @@ const mkdirHandler = async (req: Request, res: Response): Promise<void> => {
 
   try {
     await ncService.createFolder(username, password, fullPath);
+
+    // Sync folder to physical storage
+    const mount = getPhysicalStorageMount();
+    if (mount) {
+      try {
+        const localFolder = path.join(mount, fullPath.replace(/^\/+/, ''));
+        if (!fs.existsSync(localFolder)) {
+          fs.mkdirSync(localFolder, { recursive: true });
+        }
+      } catch {
+        // ignore
+      }
+    }
+
     res.status(201).json({
       success: true,
       message: `Folder "${name}" created successfully in Nextcloud`,
@@ -162,6 +202,21 @@ const renameHandler = async (req: Request, res: Response): Promise<void> => {
 
   try {
     await ncService.moveOrRename(username, password, sourcePath, destinationPath);
+
+    // Sync rename to physical storage
+    const mount = getPhysicalStorageMount();
+    if (mount) {
+      try {
+        const oldP = path.join(mount, sourcePath.replace(/^\/+/, ''));
+        const newP = path.join(mount, destinationPath.replace(/^\/+/, ''));
+        if (fs.existsSync(oldP)) {
+          fs.renameSync(oldP, newP);
+        }
+      } catch {
+        // ignore
+      }
+    }
+
     res.json({
       success: true,
       message: `Successfully renamed "${sourcePath}" to "${destinationPath}" in Nextcloud`,
@@ -186,6 +241,21 @@ const deleteHandler = async (req: Request, res: Response): Promise<void> => {
 
   try {
     await ncService.deleteItem(username, password, targetPath);
+
+    // Sync deletion to physical storage
+    const mount = getPhysicalStorageMount();
+    if (mount) {
+      try {
+        const localTarget = path.join(mount, targetPath.replace(/^\/+/, ''));
+        if (fs.existsSync(localTarget)) {
+          fs.rmSync(localTarget, { recursive: true, force: true });
+          logger.info(`[PHYSICAL SYNC] Deleted "${targetPath}" from ${mount}`);
+        }
+      } catch {
+        // ignore
+      }
+    }
+
     res.json({
       success: true,
       message: `Item at "${targetPath}" deleted from Nextcloud`,
