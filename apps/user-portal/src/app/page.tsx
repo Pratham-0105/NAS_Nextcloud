@@ -673,6 +673,13 @@ export default function UserCloudPortal() {
 
           {/* View Toggles & Actions */}
           <div className="flex items-center gap-1.5 sm:gap-3">
+            {/* Direct Upload Button in Top Bar (Unmissable on all screens) */}
+            <label className="flex items-center gap-1.5 py-1.5 px-2.5 sm:px-3 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-semibold cursor-pointer shadow-md shadow-blue-600/30 active:scale-95 transition shrink-0">
+              <UploadCloud className="h-4 w-4" />
+              <span className="font-medium">Upload</span>
+              <input type="file" className="hidden" onChange={handleFileUpload} />
+            </label>
+
             {/* Active Physical Disk Badge */}
             {diskInfo && (
               <div 
@@ -847,16 +854,18 @@ export default function UserCloudPortal() {
                 </div>
 
                 {/* Mobile Quick Action Buttons on top right */}
-                <div className="flex items-center gap-2 md:hidden">
+                <div className="flex items-center gap-2 md:hidden shrink-0">
                   <button
                     onClick={() => setShowNewFolderModal(true)}
-                    className="p-1.5 rounded-lg bg-slate-800 text-slate-300 border border-slate-700 text-xs flex items-center gap-1"
+                    className="py-1.5 px-2.5 rounded-xl bg-slate-800 text-slate-300 border border-slate-700 text-xs flex items-center gap-1.5 active:scale-95 transition"
                     title="New Folder"
                   >
                     <FolderPlus className="h-3.5 w-3.5 text-blue-400" />
+                    <span className="font-medium">Folder</span>
                   </button>
-                  <label className="p-1.5 rounded-lg bg-blue-600 text-white text-xs flex items-center gap-1 cursor-pointer shadow-md">
-                    <Plus className="h-3.5 w-3.5" />
+                  <label className="py-1.5 px-3 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold flex items-center gap-1.5 cursor-pointer shadow-md shadow-blue-600/30 active:scale-95 transition">
+                    <UploadCloud className="h-3.5 w-3.5" />
+                    <span>Upload</span>
                     <input type="file" className="hidden" onChange={handleFileUpload} />
                   </label>
                 </div>
@@ -866,9 +875,26 @@ export default function UserCloudPortal() {
               {activeTab === 'files' && (
                 <div>
                   {files.length === 0 && !loading && (
-                    <div className="text-center py-16 text-slate-500 text-sm">
-                      <Folder className="h-12 w-12 mx-auto mb-3 opacity-30" />
-                      This folder is empty. Upload a file or create a folder.
+                    <div className="text-center py-12 sm:py-16 text-slate-400 text-sm max-w-sm mx-auto flex flex-col items-center">
+                      <div className="w-16 h-16 rounded-2xl bg-[#131b2e] border border-slate-800 flex items-center justify-center text-blue-400 mb-4 shadow-xl">
+                        <Folder className="h-8 w-8 text-blue-400/70" />
+                      </div>
+                      <h3 className="text-base font-bold text-white mb-1">This folder is empty</h3>
+                      <p className="text-xs text-slate-400 mb-6 text-center">
+                        Upload your photos, documents, and videos directly to your physical CloudNAS storage.
+                      </p>
+                      <div className="flex flex-col sm:flex-row gap-3 w-full justify-center">
+                        <label className="flex items-center justify-center gap-2 py-3 px-5 bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-500 hover:from-blue-500 hover:to-indigo-500 active:scale-95 text-white font-semibold text-sm rounded-xl cursor-pointer shadow-lg shadow-blue-600/30 transition">
+                          <UploadCloud className="h-4 w-4" /> Upload File
+                          <input type="file" className="hidden" onChange={handleFileUpload} />
+                        </label>
+                        <button
+                          onClick={() => setShowNewFolderModal(true)}
+                          className="flex items-center justify-center gap-2 py-2.5 px-4 bg-slate-800 hover:bg-slate-700 active:scale-95 text-slate-300 font-medium text-xs rounded-xl border border-slate-700 transition"
+                        >
+                          <FolderPlus className="h-4 w-4 text-blue-400" /> New Folder
+                        </button>
+                      </div>
                     </div>
                   )}
 
@@ -968,6 +994,13 @@ export default function UserCloudPortal() {
           )}
         </main>
       </div>
+
+      {/* Mobile Floating Action Button (FAB) for fast thumb uploads */}
+      <label className="md:hidden fixed bottom-20 right-4 z-40 flex items-center gap-2 px-4 py-3 bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-500 hover:from-blue-500 hover:to-indigo-500 text-white font-semibold text-xs rounded-full shadow-2xl shadow-blue-500/50 border border-blue-400/40 cursor-pointer active:scale-90 transition">
+        <UploadCloud className="h-4 w-4" />
+        <span>Upload File</span>
+        <input type="file" className="hidden" onChange={handleFileUpload} />
+      </label>
 
       {/* Mobile Bottom Navigation Bar (Native App Feel) */}
       <div className="fixed bottom-0 left-0 right-0 h-16 bg-[#0f1627]/95 backdrop-blur-xl border-t border-slate-800 z-40 flex items-center justify-around px-2 md:hidden">
