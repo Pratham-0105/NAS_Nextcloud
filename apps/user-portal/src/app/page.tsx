@@ -27,7 +27,8 @@ import {
   Lock,
   User,
   LogOut,
-  Key
+  Key,
+  Menu
 } from 'lucide-react';
 
 interface FileItem {
@@ -48,6 +49,10 @@ export default function UserCloudPortal() {
   const [showPassword, setShowPassword] = useState(false);
   const [loginError, setLoginError] = useState<string | null>(null);
   const [isSubmittingLogin, setIsSubmittingLogin] = useState(false);
+
+  // Mobile Navigation States
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [mobileStorageOpen, setMobileStorageOpen] = useState(false);
 
   const [activeTab, setActiveTab] = useState<'files' | 'photos' | 'shared' | 'trash'>('files');
   const [currentFolder, setCurrentFolder] = useState<string[]>(['']);
@@ -373,24 +378,24 @@ export default function UserCloudPortal() {
   // Not Logged In - High-End Login Interface
   if (isAuthenticated === false) {
     return (
-      <div className="min-h-screen w-full bg-[#0a0f1d] flex items-center justify-center p-4 relative overflow-hidden font-sans">
+      <div className="min-h-screen w-full bg-[#0a0f1d] flex items-center justify-center p-3.5 sm:p-6 relative overflow-hidden font-sans">
         {/* Ambient Gradient Glows */}
-        <div className="absolute top-1/4 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[550px] h-[550px] bg-blue-600/15 rounded-full blur-[140px] pointer-events-none" />
-        <div className="absolute bottom-10 right-10 w-[350px] h-[350px] bg-indigo-600/10 rounded-full blur-[100px] pointer-events-none" />
+        <div className="absolute top-1/4 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[350px] sm:w-[550px] h-[350px] sm:h-[550px] bg-blue-600/15 rounded-full blur-[100px] sm:blur-[140px] pointer-events-none" />
+        <div className="absolute bottom-10 right-10 w-[250px] sm:w-[350px] h-[250px] sm:h-[350px] bg-indigo-600/10 rounded-full blur-[80px] sm:blur-[100px] pointer-events-none" />
 
-        <div className="w-full max-w-md bg-[#11192e]/90 backdrop-blur-xl border border-slate-800 rounded-3xl p-8 shadow-2xl relative z-10">
+        <div className="w-full max-w-md bg-[#11192e]/95 backdrop-blur-xl border border-slate-800 rounded-2xl sm:rounded-3xl p-5 sm:p-8 shadow-2xl relative z-10">
           {/* Header & Logo */}
-          <div className="text-center mb-8">
-            <div className="inline-flex p-3.5 bg-gradient-to-tr from-blue-600 to-indigo-600 rounded-2xl shadow-lg shadow-blue-500/25 mb-4 text-white">
-              <HardDrive className="h-7 w-7" />
+          <div className="text-center mb-6 sm:mb-8">
+            <div className="inline-flex p-3 sm:p-3.5 bg-gradient-to-tr from-blue-600 to-indigo-600 rounded-2xl shadow-lg shadow-blue-500/25 mb-3 sm:mb-4 text-white">
+              <HardDrive className="h-6 w-6 sm:h-7 sm:w-7" />
             </div>
-            <h1 className="text-2xl font-bold text-white tracking-tight">CloudNAS User Portal</h1>
-            <p className="text-slate-400 text-xs mt-1.5">Sign in to access your physical cloud storage files</p>
+            <h1 className="text-xl sm:text-2xl font-bold text-white tracking-tight">CloudNAS User Portal</h1>
+            <p className="text-slate-400 text-xs mt-1 sm:mt-1.5">Sign in to access your physical cloud storage files</p>
           </div>
 
           {/* Error Banner */}
           {loginError && (
-            <div className="mb-5 p-3.5 bg-rose-950/50 border border-rose-800/60 rounded-xl text-rose-300 text-xs flex items-center gap-2.5 animate-shake">
+            <div className="mb-4 sm:mb-5 p-3 sm:p-3.5 bg-rose-950/50 border border-rose-800/60 rounded-xl text-rose-300 text-xs flex items-center gap-2.5 animate-shake">
               <AlertCircle className="h-4 w-4 text-rose-400 shrink-0" />
               <span>{loginError}</span>
             </div>
@@ -403,15 +408,18 @@ export default function UserCloudPortal() {
                 User ID / Username
               </label>
               <div className="relative">
-                <User className="h-4 w-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                <User className="h-4 w-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
                 <input
                   type="text"
                   required
                   autoFocus
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
                   placeholder="Enter your User ID"
                   value={loginId}
                   onChange={(e) => setLoginId(e.target.value)}
-                  className="w-full pl-10 pr-4 py-2.5 bg-slate-900/80 border border-slate-700/80 rounded-xl text-sm text-white placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
+                  className="w-full pl-10 pr-4 py-3 bg-slate-900/80 border border-slate-700/80 rounded-xl text-base sm:text-sm text-white placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
                 />
               </div>
             </div>
@@ -421,19 +429,23 @@ export default function UserCloudPortal() {
                 Password
               </label>
               <div className="relative">
-                <Lock className="h-4 w-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                <Lock className="h-4 w-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
                 <input
                   type={showPassword ? 'text' : 'password'}
                   required
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
                   placeholder="Enter your password"
                   value={loginPassword}
                   onChange={(e) => setLoginPassword(e.target.value)}
-                  className="w-full pl-10 pr-10 py-2.5 bg-slate-900/80 border border-slate-700/80 rounded-xl text-sm text-white placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
+                  className="w-full pl-10 pr-11 py-3 bg-slate-900/80 border border-slate-700/80 rounded-xl text-base sm:text-sm text-white placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
                 />
                 <button
                   type="button"
                   onClick={() => setShowPassword(!showPassword)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200 p-1"
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200 p-2 rounded-lg"
+                  aria-label={showPassword ? 'Hide password' : 'Show password'}
                 >
                   {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                 </button>
@@ -444,7 +456,7 @@ export default function UserCloudPortal() {
             <button
               type="submit"
               disabled={isSubmittingLogin}
-              className="w-full mt-2 py-3 px-4 bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-500 hover:from-blue-500 hover:to-indigo-500 active:scale-[0.98] text-white font-semibold text-sm rounded-xl shadow-lg shadow-blue-600/30 transition flex items-center justify-center gap-2 disabled:opacity-50"
+              className="w-full mt-2 py-3.5 px-4 bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-500 hover:from-blue-500 hover:to-indigo-500 active:scale-[0.98] text-white font-semibold text-sm rounded-xl shadow-lg shadow-blue-600/30 transition flex items-center justify-center gap-2 disabled:opacity-50"
             >
               {isSubmittingLogin ? (
                 <>
@@ -461,8 +473,8 @@ export default function UserCloudPortal() {
           </form>
 
           {/* Footer note */}
-          <div className="mt-6 pt-5 border-t border-slate-800 text-center">
-            <p className="text-[11px] text-slate-500 flex items-center justify-center gap-1.5">
+          <div className="mt-5 sm:mt-6 pt-4 sm:pt-5 border-t border-slate-800 text-center">
+            <p className="text-[11px] text-slate-500 flex items-center justify-center gap-1.5 flex-wrap">
               <span>🔒 Single copy physical storage</span>
               <span>•</span>
               <span>Hardware guarded</span>
@@ -632,39 +644,56 @@ export default function UserCloudPortal() {
       {/* Main View Area */}
       <div className="flex-1 flex flex-col h-full overflow-hidden">
         {/* Top Navbar */}
-        <header className="h-16 border-b border-slate-800 px-4 md:px-8 flex items-center justify-between gap-4 bg-[#0d1322]">
+        <header className="h-16 border-b border-slate-800 px-3 sm:px-6 md:px-8 flex items-center justify-between gap-2 sm:gap-4 bg-[#0d1322] shrink-0">
+          {/* Mobile Menu & Brand Toggle */}
+          <div className="flex items-center gap-2 md:hidden">
+            <button
+              onClick={() => setMobileMenuOpen(true)}
+              className="p-2 text-slate-300 hover:text-white rounded-xl bg-slate-800/80 border border-slate-700/60 active:scale-95 transition"
+              aria-label="Open menu"
+            >
+              <Menu className="h-5 w-5" />
+            </button>
+            <div className="h-8 w-8 rounded-lg bg-blue-600 flex items-center justify-center text-white shadow-md">
+              <HardDrive className="h-4 w-4" />
+            </div>
+          </div>
+
           {/* Search bar */}
-          <div className="flex-1 max-w-md relative">
-            <Search className="h-4 w-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+          <div className="flex-1 max-w-[200px] xs:max-w-xs sm:max-w-md relative">
+            <Search className="h-3.5 w-3.5 sm:h-4 sm:w-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
             <input
               type="text"
-              placeholder="Search files, photos, folders in Nextcloud..."
+              placeholder="Search files..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full pl-9 pr-4 py-2 bg-slate-800/60 border border-slate-700/60 rounded-xl text-sm text-slate-200 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500 transition"
+              className="w-full pl-8 sm:pl-9 pr-3 py-1.5 sm:py-2 bg-slate-800/60 border border-slate-700/60 rounded-xl text-xs sm:text-sm text-slate-200 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500 transition"
             />
           </div>
 
           {/* View Toggles & Actions */}
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-1.5 sm:gap-3">
             {/* Active Physical Disk Badge */}
             {diskInfo && (
-              <div className={`hidden sm:flex items-center gap-2.5 px-3 py-1.5 rounded-xl text-xs border transition ${
-                diskInfo.isConnected !== false && diskInfo.status === 'ONLINE'
-                  ? 'bg-slate-800/80 border-slate-700/80'
-                  : 'bg-rose-950/40 border-rose-500/50 text-rose-200'
-              }`}>
+              <div 
+                onClick={() => setMobileStorageOpen(true)}
+                className={`hidden sm:flex items-center gap-2.5 px-3 py-1.5 rounded-xl text-xs border cursor-pointer hover:border-slate-600 transition ${
+                  diskInfo.isConnected !== false && diskInfo.status === 'ONLINE'
+                    ? 'bg-slate-800/80 border-slate-700/80'
+                    : 'bg-rose-950/40 border-rose-500/50 text-rose-200'
+                }`}
+              >
                 <div className={`h-2 w-2 rounded-full ${
                   diskInfo.isConnected !== false && diskInfo.status === 'ONLINE'
                     ? 'bg-emerald-400 animate-pulse'
                     : 'bg-rose-500 animate-ping'
                 }`} />
                 <div className="flex flex-col text-left">
-                  <span className="font-semibold text-slate-200 flex items-center gap-1.5 text-xs truncate max-w-[160px]">
+                  <span className="font-semibold text-slate-200 flex items-center gap-1.5 text-xs truncate max-w-[140px]">
                     <HardDrive className={`h-3.5 w-3.5 ${
                       diskInfo.isConnected !== false && diskInfo.status === 'ONLINE' ? 'text-blue-400' : 'text-rose-400'
                     }`} />
-                    {diskInfo.name || 'SanDisk 3.2Gen1'}
+                    {diskInfo.name || 'CloudNAS'}
                   </span>
                   <span className={`text-[10px] font-medium ${
                     diskInfo.isConnected !== false && diskInfo.status === 'ONLINE' ? 'text-emerald-400' : 'text-rose-400 font-semibold'
@@ -677,6 +706,7 @@ export default function UserCloudPortal() {
               </div>
             )}
 
+            {/* Refresh Button */}
             <button
               onClick={() => fetchCloudFiles()}
               className="p-2 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition"
@@ -685,24 +715,30 @@ export default function UserCloudPortal() {
               <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
             </button>
 
-            <div className="flex bg-slate-800 rounded-lg p-1 border border-slate-700">
+            {/* View Mode Toggle */}
+            <div className="hidden xs:flex bg-slate-800 rounded-lg p-1 border border-slate-700">
               <button
                 onClick={() => setViewMode('grid')}
                 className={`p-1.5 rounded ${viewMode === 'grid' ? 'bg-blue-600 text-white' : 'text-slate-400'}`}
+                aria-label="Grid view"
               >
-                <Grid className="h-4 w-4" />
+                <Grid className="h-3.5 w-3.5" />
               </button>
               <button
                 onClick={() => setViewMode('list')}
                 className={`p-1.5 rounded ${viewMode === 'list' ? 'bg-blue-600 text-white' : 'text-slate-400'}`}
+                aria-label="List view"
               >
-                <List className="h-4 w-4" />
+                <List className="h-3.5 w-3.5" />
               </button>
             </div>
 
             {/* Logged in User Profile & Sign Out Button */}
-            <div className="flex items-center gap-2 pl-3 border-l border-slate-700/80">
-              <div className="h-8 w-8 rounded-full bg-gradient-to-tr from-blue-600 to-indigo-600 border border-blue-400/40 flex items-center justify-center font-bold text-xs text-white shadow-sm">
+            <div className="flex items-center gap-1.5 sm:gap-2 pl-2 sm:pl-3 border-l border-slate-700/80">
+              <div 
+                onClick={() => setMobileMenuOpen(true)}
+                className="h-7 w-7 sm:h-8 sm:w-8 rounded-full bg-gradient-to-tr from-blue-600 to-indigo-600 border border-blue-400/40 flex items-center justify-center font-bold text-xs text-white shadow-sm cursor-pointer md:cursor-default"
+              >
                 {(currentUser?.name || currentUser?.id || 'U')[0].toUpperCase()}
               </div>
               <div className="hidden lg:flex flex-col text-left">
@@ -713,7 +749,7 @@ export default function UserCloudPortal() {
               </div>
               <button
                 onClick={handleLogout}
-                className="p-1.5 ml-1 text-slate-400 hover:text-rose-400 hover:bg-rose-950/30 rounded-lg transition"
+                className="p-1.5 text-slate-400 hover:text-rose-400 hover:bg-rose-950/30 rounded-lg transition"
                 title="Sign Out"
               >
                 <LogOut className="h-4 w-4" />
@@ -735,13 +771,13 @@ export default function UserCloudPortal() {
           </div>
         )}
 
-        {/* Content Explorer */}
-        <main className="flex-1 overflow-y-auto p-4 md:p-8">
+        {/* Content Explorer with Safe Bottom Spacing for Mobile Navigation */}
+        <main className="flex-1 overflow-y-auto p-3.5 sm:p-6 md:p-8 pb-24 md:pb-8">
           {diskInfo && (diskInfo.isConnected === false || diskInfo.status === 'DISCONNECTED') ? (
-            <div className="flex flex-col items-center justify-center py-16 px-4 text-center max-w-lg mx-auto">
+            <div className="flex flex-col items-center justify-center py-12 sm:py-16 px-4 text-center max-w-lg mx-auto">
               <div className="relative mb-6">
-                <div className="w-24 h-24 rounded-3xl bg-rose-500/10 border border-rose-500/30 flex items-center justify-center text-rose-400 shadow-2xl">
-                  <HardDrive className="h-12 w-12 text-rose-400" />
+                <div className="w-20 h-20 sm:w-24 sm:h-24 rounded-3xl bg-rose-500/10 border border-rose-500/30 flex items-center justify-center text-rose-400 shadow-2xl">
+                  <HardDrive className="h-10 w-10 sm:h-12 sm:w-12 text-rose-400" />
                 </div>
                 <div className="absolute -bottom-1 -right-1 bg-rose-600 text-white rounded-full p-1.5 shadow-lg">
                   <AlertCircle className="h-4 w-4" />
@@ -752,11 +788,11 @@ export default function UserCloudPortal() {
                 Storage Disk Ejected
               </span>
 
-              <h2 className="text-2xl font-bold text-white mb-2">
+              <h2 className="text-xl sm:text-2xl font-bold text-white mb-2">
                 Physical Cloud Storage Disconnected
               </h2>
 
-              <p className="text-slate-400 text-sm leading-relaxed mb-6">
+              <p className="text-slate-400 text-xs sm:text-sm leading-relaxed mb-6">
                 Your cloud files and documents are stored physically on <span className="text-slate-200 font-semibold">{diskInfo?.name || 'CloudNAS'}</span>. For your privacy and storage safety, your personal data is locked and hidden while the physical drive is disconnected.
               </p>
 
@@ -788,25 +824,42 @@ export default function UserCloudPortal() {
             </div>
           ) : (
             <>
-              {/* Breadcrumb Path */}
-              <div className="flex items-center gap-1 text-sm text-slate-400 mb-6 font-medium">
-                <button
-                  onClick={() => setCurrentFolder([''])}
-                  className={`hover:text-blue-400 transition ${currentFolder.length === 1 ? 'text-white font-semibold' : ''}`}
-                >
-                  My Cloud
-                </button>
-                {currentFolder.filter(Boolean).map((crumb, idx) => (
-                  <React.Fragment key={crumb}>
-                    <ChevronRight className="h-4 w-4 text-slate-600" />
-                    <button
-                      onClick={() => navigateBack(idx + 1)}
-                      className={`hover:text-blue-400 transition ${idx === currentFolder.filter(Boolean).length - 1 ? 'text-white font-semibold' : ''}`}
-                    >
-                      {crumb}
-                    </button>
-                  </React.Fragment>
-                ))}
+              {/* Breadcrumb Path & Mobile Upload Button */}
+              <div className="flex items-center justify-between gap-2 mb-4 sm:mb-6">
+                <div className="flex items-center gap-1 text-xs sm:text-sm text-slate-400 font-medium flex-wrap">
+                  <button
+                    onClick={() => setCurrentFolder([''])}
+                    className={`hover:text-blue-400 transition ${currentFolder.length === 1 ? 'text-white font-semibold' : ''}`}
+                  >
+                    My Cloud
+                  </button>
+                  {currentFolder.filter(Boolean).map((crumb, idx) => (
+                    <React.Fragment key={crumb}>
+                      <ChevronRight className="h-3.5 w-3.5 sm:h-4 sm:w-4 text-slate-600" />
+                      <button
+                        onClick={() => navigateBack(idx + 1)}
+                        className={`hover:text-blue-400 transition truncate max-w-[120px] ${idx === currentFolder.filter(Boolean).length - 1 ? 'text-white font-semibold' : ''}`}
+                      >
+                        {crumb}
+                      </button>
+                    </React.Fragment>
+                  ))}
+                </div>
+
+                {/* Mobile Quick Action Buttons on top right */}
+                <div className="flex items-center gap-2 md:hidden">
+                  <button
+                    onClick={() => setShowNewFolderModal(true)}
+                    className="p-1.5 rounded-lg bg-slate-800 text-slate-300 border border-slate-700 text-xs flex items-center gap-1"
+                    title="New Folder"
+                  >
+                    <FolderPlus className="h-3.5 w-3.5 text-blue-400" />
+                  </button>
+                  <label className="p-1.5 rounded-lg bg-blue-600 text-white text-xs flex items-center gap-1 cursor-pointer shadow-md">
+                    <Plus className="h-3.5 w-3.5" />
+                    <input type="file" className="hidden" onChange={handleFileUpload} />
+                  </label>
+                </div>
               </div>
 
               {/* TAB 1: ALL FILES */}
@@ -820,33 +873,33 @@ export default function UserCloudPortal() {
                   )}
 
                   {viewMode === 'grid' ? (
-                    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-4">
+                    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3 sm:gap-4">
                       {filteredFiles.map((file) => (
                         <div
                           key={file.name}
                           onClick={() => file.type === 'folder' ? navigateIntoFolder(file.name) : setPreviewFile(file)}
-                          className="bg-[#131b2e] hover:bg-[#1a253f] border border-slate-800 rounded-2xl p-4 flex flex-col justify-between cursor-pointer transition group shadow-sm relative"
+                          className="bg-[#131b2e] hover:bg-[#1a253f] border border-slate-800 rounded-2xl p-3 sm:p-4 flex flex-col justify-between cursor-pointer transition group shadow-sm relative active:scale-[0.98]"
                         >
-                          <div className="aspect-square rounded-xl bg-slate-900/60 flex items-center justify-center mb-3 overflow-hidden">
-                            {file.type === 'folder' && <Folder className="h-12 w-12 text-blue-400 fill-blue-500/20" />}
+                          <div className="aspect-square rounded-xl bg-slate-900/60 flex items-center justify-center mb-2.5 sm:mb-3 overflow-hidden">
+                            {file.type === 'folder' && <Folder className="h-10 w-10 sm:h-12 sm:w-12 text-blue-400 fill-blue-500/20" />}
                             {file.type === 'image' && file.url && (
                               <img src={file.url} alt={file.name} className="h-full w-full object-cover group-hover:scale-105 transition" />
                             )}
-                            {file.type === 'document' && <FileText className="h-10 w-10 text-emerald-400" />}
-                            {file.type === 'video' && <Film className="h-10 w-10 text-purple-400" />}
+                            {file.type === 'document' && <FileText className="h-8 w-8 sm:h-10 sm:w-10 text-emerald-400" />}
+                            {file.type === 'video' && <Film className="h-8 w-8 sm:h-10 sm:w-10 text-purple-400" />}
                           </div>
                           <div>
                             <div className="text-xs font-semibold text-slate-200 truncate group-hover:text-blue-400 transition">{file.name}</div>
                             <div className="text-[11px] text-slate-500 mt-1 flex justify-between items-center">
                               <span>{file.size}</span>
-                              <div className="opacity-0 group-hover:opacity-100 transition flex items-center gap-1">
+                              <div className="opacity-90 sm:opacity-0 sm:group-hover:opacity-100 transition flex items-center gap-1">
                                 {file.type !== 'folder' && (
-                                  <button onClick={(e) => handleDownload(file.path, e)} title="Download">
-                                    <Download className="h-3.5 w-3.5 text-slate-300 hover:text-white" />
+                                  <button onClick={(e) => handleDownload(file.path, e)} title="Download" className="p-1 hover:text-white text-slate-300">
+                                    <Download className="h-3.5 w-3.5" />
                                   </button>
                                 )}
-                                <button onClick={(e) => handleDeleteFile(file.path, e)} title="Delete">
-                                  <Trash2 className="h-3.5 w-3.5 text-rose-400 hover:text-rose-300" />
+                                <button onClick={(e) => handleDeleteFile(file.path, e)} title="Delete" className="p-1 text-rose-400 hover:text-rose-300">
+                                  <Trash2 className="h-3.5 w-3.5" />
                                 </button>
                               </div>
                             </div>
@@ -861,21 +914,21 @@ export default function UserCloudPortal() {
                           <div
                             key={file.name}
                             onClick={() => file.type === 'folder' ? navigateIntoFolder(file.name) : setPreviewFile(file)}
-                            className="flex items-center justify-between p-3.5 hover:bg-slate-800/40 cursor-pointer transition"
+                            className="flex items-center justify-between p-3 sm:p-3.5 hover:bg-slate-800/40 cursor-pointer transition gap-2"
                           >
-                            <div className="flex items-center gap-3">
-                              {file.type === 'folder' ? <Folder className="h-5 w-5 text-blue-400" /> : <FileText className="h-5 w-5 text-slate-400" />}
-                              <span className="font-medium text-slate-200">{file.name}</span>
+                            <div className="flex items-center gap-2.5 sm:gap-3 min-w-0">
+                              {file.type === 'folder' ? <Folder className="h-5 w-5 text-blue-400 shrink-0" /> : <FileText className="h-5 w-5 text-slate-400 shrink-0" />}
+                              <span className="font-medium text-slate-200 text-xs sm:text-sm truncate">{file.name}</span>
                             </div>
-                            <div className="flex items-center gap-6 text-xs text-slate-400">
-                              <span>{file.size}</span>
-                              <span>{file.modified}</span>
+                            <div className="flex items-center gap-2 sm:gap-5 text-xs text-slate-400 shrink-0">
+                              <span className="text-[11px] sm:text-xs">{file.size}</span>
+                              <span className="hidden md:inline text-[11px] sm:text-xs">{file.modified}</span>
                               {file.type !== 'folder' && (
-                                <button onClick={(e) => handleDownload(file.path, e)} className="p-1 hover:text-slate-200">
+                                <button onClick={(e) => handleDownload(file.path, e)} className="p-1.5 text-slate-400 hover:text-white rounded">
                                   <Download className="h-4 w-4" />
                                 </button>
                               )}
-                              <button onClick={(e) => handleDeleteFile(file.path, e)} className="p-1 hover:text-rose-400">
+                              <button onClick={(e) => handleDeleteFile(file.path, e)} className="p-1.5 text-slate-400 hover:text-rose-400 rounded">
                                 <Trash2 className="h-4 w-4" />
                               </button>
                             </div>
@@ -891,15 +944,15 @@ export default function UserCloudPortal() {
               {activeTab === 'photos' && (
                 <div>
                   <div className="flex items-center justify-between mb-4">
-                    <h2 className="text-lg font-bold text-white">Photos & Moments</h2>
+                    <h2 className="text-base sm:text-lg font-bold text-white">Photos & Moments</h2>
                     <span className="text-xs text-slate-400">{photos.length} Photos in Nextcloud</span>
                   </div>
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3 sm:gap-4">
                     {photos.map((photo) => (
                       <div 
                         key={photo.name}
                         onClick={() => setPreviewFile(photo)}
-                        className="aspect-square bg-slate-900 rounded-2xl overflow-hidden cursor-pointer relative group border border-slate-800"
+                        className="aspect-square bg-slate-900 rounded-2xl overflow-hidden cursor-pointer relative group border border-slate-800 active:scale-95 transition"
                       >
                         <img src={photo.url} alt={photo.name} className="h-full w-full object-cover group-hover:scale-105 transition duration-300" />
                         <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent opacity-0 group-hover:opacity-100 transition p-3 flex flex-col justify-end">
@@ -916,10 +969,274 @@ export default function UserCloudPortal() {
         </main>
       </div>
 
+      {/* Mobile Bottom Navigation Bar (Native App Feel) */}
+      <div className="fixed bottom-0 left-0 right-0 h-16 bg-[#0f1627]/95 backdrop-blur-xl border-t border-slate-800 z-40 flex items-center justify-around px-2 md:hidden">
+        <button
+          onClick={() => setActiveTab('files')}
+          className={`flex flex-col items-center gap-1 py-1 px-3 transition ${
+            activeTab === 'files' ? 'text-blue-400 font-semibold' : 'text-slate-400 hover:text-slate-200'
+          }`}
+        >
+          <Folder className="h-5 w-5" />
+          <span className="text-[10px]">Files</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab('photos')}
+          className={`flex flex-col items-center gap-1 py-1 px-3 transition ${
+            activeTab === 'photos' ? 'text-blue-400 font-semibold' : 'text-slate-400 hover:text-slate-200'
+          }`}
+        >
+          <ImageIcon className="h-5 w-5" />
+          <span className="text-[10px]">Photos</span>
+        </button>
+
+        {/* Highlighted Mobile Floating Upload Button */}
+        <label className="flex flex-col items-center -mt-5 cursor-pointer group">
+          <div className="h-12 w-12 rounded-full bg-gradient-to-tr from-blue-600 via-indigo-600 to-blue-500 text-white shadow-xl shadow-blue-600/40 flex items-center justify-center border-4 border-[#0b0f19] active:scale-90 transition">
+            <Plus className="h-6 w-6 stroke-[2.5]" />
+          </div>
+          <span className="text-[10px] text-blue-400 font-semibold mt-0.5">Upload</span>
+          <input type="file" className="hidden" onChange={handleFileUpload} />
+        </label>
+
+        <button
+          onClick={() => setMobileStorageOpen(true)}
+          className="flex flex-col items-center gap-1 py-1 px-3 text-slate-400 hover:text-slate-200 transition relative"
+        >
+          <div className="relative">
+            <HardDrive className={`h-5 w-5 ${
+              diskInfo && (diskInfo.isConnected === false || diskInfo.status === 'DISCONNECTED') ? 'text-rose-400' : 'text-slate-400'
+            }`} />
+            <span className={`absolute -top-0.5 -right-0.5 h-2 w-2 rounded-full ${
+              diskInfo && (diskInfo.isConnected === false || diskInfo.status === 'DISCONNECTED') ? 'bg-rose-500' : 'bg-emerald-400'
+            }`} />
+          </div>
+          <span className="text-[10px]">Storage</span>
+        </button>
+
+        <button
+          onClick={() => setMobileMenuOpen(true)}
+          className="flex flex-col items-center gap-1 py-1 px-3 text-slate-400 hover:text-slate-200 transition"
+        >
+          <Menu className="h-5 w-5" />
+          <span className="text-[10px]">Menu</span>
+        </button>
+      </div>
+
+      {/* Mobile Slide-over Drawer */}
+      {mobileMenuOpen && (
+        <div className="fixed inset-0 z-50 md:hidden flex">
+          {/* Backdrop */}
+          <div 
+            className="fixed inset-0 bg-black/75 backdrop-blur-sm transition-opacity" 
+            onClick={() => setMobileMenuOpen(false)} 
+          />
+
+          {/* Drawer Content */}
+          <div className="relative w-[85%] max-w-[320px] bg-[#111728] h-full p-5 flex flex-col justify-between shadow-2xl border-r border-slate-800 z-10 overflow-y-auto">
+            <div className="space-y-6">
+              {/* Header with Close */}
+              <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+                <div className="flex items-center gap-2.5">
+                  <div className="h-8 w-8 rounded-xl bg-blue-600 flex items-center justify-center text-white shadow-md">
+                    <HardDrive className="h-4 w-4" />
+                  </div>
+                  <div>
+                    <span className="font-bold text-base text-white tracking-tight">CloudNAS</span>
+                    <span className="block text-[10px] text-blue-400 font-medium">Nextcloud Storage</span>
+                  </div>
+                </div>
+                <button 
+                  onClick={() => setMobileMenuOpen(false)}
+                  className="p-1.5 text-slate-400 hover:text-white rounded-lg bg-slate-800"
+                >
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+
+              {/* User Card */}
+              <div className="p-3 bg-slate-900/80 border border-slate-800 rounded-xl flex items-center justify-between">
+                <div className="flex items-center gap-2.5 overflow-hidden">
+                  <div className="h-9 w-9 rounded-full bg-blue-600 flex items-center justify-center font-bold text-sm text-white shrink-0">
+                    {(currentUser?.name || currentUser?.id || 'U')[0].toUpperCase()}
+                  </div>
+                  <div className="overflow-hidden text-left">
+                    <div className="text-xs font-semibold text-white truncate">{currentUser?.name || currentUser?.id}</div>
+                    <div className="text-[10px] text-slate-400">@{currentUser?.id}</div>
+                  </div>
+                </div>
+                <button 
+                  onClick={() => { setMobileMenuOpen(false); handleLogout(); }}
+                  className="p-1.5 text-rose-400 hover:bg-rose-950/40 rounded-lg shrink-0"
+                  title="Sign Out"
+                >
+                  <LogOut className="h-4 w-4" />
+                </button>
+              </div>
+
+              {/* Action Buttons */}
+              <div className="space-y-2">
+                <label className="flex items-center justify-center gap-2 w-full py-2.5 px-4 bg-blue-600 hover:bg-blue-500 active:scale-95 text-white font-medium text-sm rounded-xl cursor-pointer shadow-lg shadow-blue-600/20 transition">
+                  <Plus className="h-4 w-4" /> Upload File
+                  <input 
+                    type="file" 
+                    className="hidden" 
+                    onChange={(e) => {
+                      setMobileMenuOpen(false);
+                      handleFileUpload(e);
+                    }} 
+                  />
+                </label>
+                <button
+                  onClick={() => {
+                    setMobileMenuOpen(false);
+                    setShowNewFolderModal(true);
+                  }}
+                  className="flex items-center justify-center gap-2 w-full py-2.5 px-4 bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium text-xs rounded-xl border border-slate-700 transition"
+                >
+                  <FolderPlus className="h-4 w-4" /> New Folder
+                </button>
+              </div>
+
+              {/* Navigation Links */}
+              <nav className="space-y-1">
+                <button
+                  onClick={() => { setActiveTab('files'); setMobileMenuOpen(false); }}
+                  className={`flex items-center gap-3 w-full px-3 py-2.5 rounded-xl text-sm font-medium transition ${
+                    activeTab === 'files' ? 'bg-blue-600/10 text-blue-400 font-semibold' : 'text-slate-400 hover:bg-slate-800/50 hover:text-slate-200'
+                  }`}
+                >
+                  <Folder className="h-4 w-4" /> My Files
+                </button>
+                <button
+                  onClick={() => { setActiveTab('photos'); setMobileMenuOpen(false); }}
+                  className={`flex items-center gap-3 w-full px-3 py-2.5 rounded-xl text-sm font-medium transition ${
+                    activeTab === 'photos' ? 'bg-blue-600/10 text-blue-400 font-semibold' : 'text-slate-400 hover:bg-slate-800/50 hover:text-slate-200'
+                  }`}
+                >
+                  <ImageIcon className="h-4 w-4" /> Photos & Gallery
+                </button>
+                <button
+                  onClick={() => { setActiveTab('shared'); setMobileMenuOpen(false); }}
+                  className={`flex items-center gap-3 w-full px-3 py-2.5 rounded-xl text-sm font-medium transition ${
+                    activeTab === 'shared' ? 'bg-blue-600/10 text-blue-400 font-semibold' : 'text-slate-400 hover:bg-slate-800/50 hover:text-slate-200'
+                  }`}
+                >
+                  <Share2 className="h-4 w-4" /> Shared Links
+                </button>
+                <button
+                  onClick={() => { setActiveTab('trash'); setMobileMenuOpen(false); }}
+                  className={`flex items-center gap-3 w-full px-3 py-2.5 rounded-xl text-sm font-medium transition ${
+                    activeTab === 'trash' ? 'bg-blue-600/10 text-blue-400 font-semibold' : 'text-slate-400 hover:bg-slate-800/50 hover:text-slate-200'
+                  }`}
+                >
+                  <Trash2 className="h-4 w-4" /> Trash
+                </button>
+              </nav>
+            </div>
+
+            {/* Real Physical Disk & Available Space Widget inside Drawer */}
+            <div className={`mt-6 border p-4 rounded-2xl shadow-lg transition ${
+              diskInfo && (diskInfo.isConnected === false || diskInfo.status === 'DISCONNECTED')
+                ? 'bg-[#1e131d] border-rose-900/60'
+                : 'bg-[#161f36] border-slate-800'
+            }`}>
+              <div className="flex items-center justify-between text-xs text-slate-400 mb-2">
+                <div className="flex items-center gap-1.5 truncate">
+                  <HardDrive className={`h-4 w-4 shrink-0 ${
+                    diskInfo && (diskInfo.isConnected === false || diskInfo.status === 'DISCONNECTED') ? 'text-rose-400' : 'text-blue-400'
+                  }`} />
+                  <span className="font-semibold text-slate-200 truncate">{diskInfo?.name || 'CloudNAS'}</span>
+                </div>
+                <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${
+                  diskInfo && (diskInfo.isConnected === false || diskInfo.status === 'DISCONNECTED')
+                    ? 'bg-rose-500/10 text-rose-400'
+                    : 'bg-emerald-500/10 text-emerald-400'
+                }`}>
+                  {diskInfo && (diskInfo.isConnected === false || diskInfo.status === 'DISCONNECTED') ? 'Ejected' : 'Online'}
+                </span>
+              </div>
+
+              <div className="mb-2">
+                <div className="text-lg font-bold text-slate-100 flex items-baseline justify-between">
+                  <span>{diskInfo?.freeStr || quota.freeStr}</span>
+                  <span className="text-[11px] font-medium text-emerald-400">Free</span>
+                </div>
+                <div className="text-[10px] text-slate-400 flex justify-between mt-0.5">
+                  <span>{quota.usedStr} used</span>
+                  <span className="text-slate-300">{quota.totalStr} Total</span>
+                </div>
+              </div>
+
+              <div className="w-full bg-slate-800 h-1.5 rounded-full overflow-hidden">
+                <div
+                  className={`h-1.5 rounded-full ${
+                    diskInfo && (diskInfo.isConnected === false || diskInfo.status === 'DISCONNECTED')
+                      ? 'bg-rose-500 w-full'
+                      : 'bg-gradient-to-r from-blue-500 via-indigo-500 to-emerald-400'
+                  }`}
+                  style={{ width: `${Math.max(2, quota.percent)}%` }}
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Mobile Storage Info Modal */}
+      {mobileStorageOpen && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
+          <div className="bg-[#111726] border border-slate-800 rounded-t-3xl sm:rounded-2xl max-w-md w-full p-6 space-y-4">
+            <div className="flex items-center justify-between pb-2 border-b border-slate-800">
+              <h3 className="font-bold text-base text-white flex items-center gap-2">
+                <HardDrive className="h-5 w-5 text-blue-400" /> Physical Storage Status
+              </h3>
+              <button
+                onClick={() => setMobileStorageOpen(false)}
+                className="p-1 rounded-lg bg-slate-800 text-slate-400 hover:text-white"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="space-y-2.5">
+              <div className="flex items-center justify-between p-3 bg-slate-900/80 rounded-xl border border-slate-800">
+                <span className="text-xs text-slate-400">Attached Hardware</span>
+                <span className="text-xs font-semibold text-white">{diskInfo?.name || 'SanDisk USB 3.2'}</span>
+              </div>
+              <div className="flex items-center justify-between p-3 bg-slate-900/80 rounded-xl border border-slate-800">
+                <span className="text-xs text-slate-400">Free Space Available</span>
+                <span className="text-xs font-bold text-emerald-400">{diskInfo?.freeStr || quota.freeStr}</span>
+              </div>
+              <div className="flex items-center justify-between p-3 bg-slate-900/80 rounded-xl border border-slate-800">
+                <span className="text-xs text-slate-400">Total Capacity</span>
+                <span className="text-xs font-semibold text-slate-200">{quota.totalStr}</span>
+              </div>
+              <div className="flex items-center justify-between p-3 bg-slate-900/80 rounded-xl border border-slate-800">
+                <span className="text-xs text-slate-400">Mount Path</span>
+                <span className="text-xs font-mono text-slate-300">{diskInfo?.mountPoint || '/Volumes/CloudNAS'}</span>
+              </div>
+              <div className="flex items-center justify-between p-3 bg-slate-900/80 rounded-xl border border-slate-800">
+                <span className="text-xs text-slate-400">Single-Copy Guard</span>
+                <span className="text-xs font-semibold text-emerald-400">Active (External Drive Only)</span>
+              </div>
+            </div>
+
+            <button
+              onClick={() => setMobileStorageOpen(false)}
+              className="w-full py-2.5 rounded-xl bg-slate-800 text-slate-200 text-xs font-semibold hover:bg-slate-700 transition"
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* New Folder Modal */}
       {showNewFolderModal && (
         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <form onSubmit={handleCreateFolder} className="bg-[#111726] border border-slate-800 rounded-2xl max-w-sm w-full p-6 space-y-4">
+          <form onSubmit={handleCreateFolder} className="bg-[#111726] border border-slate-800 rounded-2xl max-w-sm w-full p-5 sm:p-6 space-y-4">
             <h3 className="font-bold text-base text-white flex items-center gap-2">
               <FolderPlus className="h-5 w-5 text-blue-400" /> Create New Folder
             </h3>
@@ -928,20 +1245,20 @@ export default function UserCloudPortal() {
               placeholder="Folder Name (e.g. Projects)"
               value={newFolderName}
               onChange={(e) => setNewFolderName(e.target.value)}
-              className="w-full px-3.5 py-2.5 bg-slate-900 border border-slate-700 rounded-xl text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="w-full px-3.5 py-3 bg-slate-900 border border-slate-700 rounded-xl text-base sm:text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
               autoFocus
             />
-            <div className="flex justify-end gap-3">
+            <div className="flex justify-end gap-3 pt-1">
               <button
                 type="button"
                 onClick={() => setShowNewFolderModal(false)}
-                className="px-3.5 py-2 rounded-xl bg-slate-800 text-slate-300 text-xs font-medium"
+                className="px-4 py-2.5 rounded-xl bg-slate-800 text-slate-300 text-xs font-medium"
               >
                 Cancel
               </button>
               <button
                 type="submit"
-                className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold"
+                className="px-4 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold"
               >
                 Create
               </button>
@@ -952,32 +1269,35 @@ export default function UserCloudPortal() {
 
       {/* Preview Modal */}
       {previewFile && (
-        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-[#111726] border border-slate-800 rounded-2xl max-w-2xl w-full p-6 relative">
-            <button 
-              onClick={() => setPreviewFile(null)}
-              className="absolute top-4 right-4 p-1.5 rounded-lg bg-slate-800 text-slate-400 hover:text-white"
-            >
-              <X className="h-5 w-5" />
-            </button>
-            <h3 className="font-bold text-lg text-white mb-4 flex items-center gap-2">
-              <Eye className="h-5 w-5 text-blue-400" /> {previewFile.name}
-            </h3>
-            <div className="rounded-xl overflow-hidden bg-black/40 flex items-center justify-center min-h-[300px] border border-slate-800 mb-4">
-              {previewFile.type === 'image' && previewFile.url ? (
-                <img src={previewFile.url} alt={previewFile.name} className="max-h-[400px] object-contain" />
-              ) : (
-                <div className="text-center p-8">
-                  <FileText className="h-16 w-16 text-slate-500 mx-auto mb-2" />
-                  <p className="text-sm text-slate-400">Document preview ready via Nextcloud PDF viewer</p>
-                </div>
-              )}
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-3 sm:p-4">
+          <div className="bg-[#111726] border border-slate-800 rounded-2xl max-w-2xl w-full p-4 sm:p-6 relative max-h-[90vh] flex flex-col justify-between">
+            <div>
+              <button 
+                onClick={() => setPreviewFile(null)}
+                className="absolute top-4 right-4 p-1.5 rounded-lg bg-slate-800 text-slate-400 hover:text-white"
+              >
+                <X className="h-5 w-5" />
+              </button>
+              <h3 className="font-bold text-base sm:text-lg text-white mb-3 sm:mb-4 flex items-center gap-2 truncate pr-10">
+                <Eye className="h-4 w-4 sm:h-5 sm:w-5 text-blue-400 shrink-0" />
+                <span className="truncate">{previewFile.name}</span>
+              </h3>
+              <div className="rounded-xl overflow-hidden bg-black/40 flex items-center justify-center min-h-[220px] sm:min-h-[300px] border border-slate-800 mb-4">
+                {previewFile.type === 'image' && previewFile.url ? (
+                  <img src={previewFile.url} alt={previewFile.name} className="max-h-[350px] object-contain" />
+                ) : (
+                  <div className="text-center p-6 sm:p-8">
+                    <FileText className="h-12 w-12 sm:h-16 sm:w-16 text-slate-500 mx-auto mb-2" />
+                    <p className="text-xs sm:text-sm text-slate-400">Document preview ready via Nextcloud PDF viewer</p>
+                  </div>
+                )}
+              </div>
             </div>
-            <div className="flex justify-between items-center text-xs text-slate-400">
-              <span>Size: {previewFile.size} • Modified: {previewFile.modified}</span>
+            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 text-xs text-slate-400 pt-2 border-t border-slate-800">
+              <span className="truncate">Size: {previewFile.size} • Modified: {previewFile.modified}</span>
               <button 
                 onClick={(e) => handleDownload(previewFile.path, e)}
-                className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg font-medium flex items-center gap-2"
+                className="w-full sm:w-auto px-4 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl font-medium flex items-center justify-center gap-2 text-xs sm:text-sm shadow-md"
               >
                 <Download className="h-4 w-4" /> Download File
               </button>
