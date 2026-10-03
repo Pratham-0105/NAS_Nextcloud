@@ -1,4 +1,6 @@
+import net from 'node:net';
 import si from 'systeminformation';
+import { env } from '../config/env.js';
 import { logger } from '../utils/logger.js';
 import { SystemTelemetryData } from '../types/index.js';
 import { StoragePoolService } from './StoragePoolService.js';
@@ -10,12 +12,54 @@ export class TelemetryService {
     this.poolService = poolService;
   }
 
+  private async checkTcpPort(host: string, port: number, timeoutMs = 1500): Promise<boolean> {
+    return new Promise((resolve) => {
+      const socket = new net.Socket();
+      socket.setTimeout(timeoutMs);
+
+      socket.on('connect', () => {
+        socket.destroy();
+        resolve(true);
+      });
+
+      socket.on('timeout', () => {
+        socket.destroy();
+        resolve(false);
+      });
+
+      socket.on('error', () => {
+        socket.destroy();
+        resolve(false);
+      });
+
+      socket.connect(port, host);
+    });
+  }
+
+  private async checkNextcloud(): Promise<boolean> {
+    try {
+      const statusUrl = `${env.NEXTCLOUD_INTERNAL_URL.replace(/\/$/, '')}/status.php`;
+      const res = await fetch(statusUrl, { signal: AbortSignal.timeout(2000) });
+      if (res.ok) {
+        const data = (await res.json()) as any;
+        return data?.installed === true && data?.maintenance === false;
+      }
+      return false;
+    } catch {
+      return false;
+    }
+  }
+
   public async getTelemetry(): Promise<SystemTelemetryData> {
     try {
-      const [currentLoad, mem, time] = await Promise.all([
+      const [currentLoad, mem, time, fsList, ncReady, dbReady, redisReady] = await Promise.all([
         si.currentLoad(),
         si.mem(),
         si.time(),
+        si.fsSize(),
+        this.checkNextcloud(),
+        this.checkTcpPort('127.0.0.1', 5432),
+        this.checkTcpPort('127.0.0.1', 6379),
       ]);
 
       const poolSummary = await this.poolService.getPoolSummary();
@@ -35,9 +79,9 @@ export class TelemetryService {
         uptimeSeconds: Math.floor(time.uptime),
         pool: poolSummary,
         dockerStatus: {
-          nextcloud: true,
-          postgres: true,
-          redis: true,
+          nextcloud: ncReady,
+          postgres: dbReady,
+          redis: redisReady,
         },
         timestamp: new Date().toISOString(),
       };
@@ -54,7 +98,7 @@ export class TelemetryService {
         dockerStatus: {
           nextcloud: true,
           postgres: true,
-          redis: true,
+          redis: false,
         },
         timestamp: new Date().toISOString(),
       };

@@ -63,6 +63,7 @@ export default function AdminDashboard() {
   });
   const [cpuUsage, setCpuUsage] = useState(14.8);
   const [ramPercent, setRamPercent] = useState(28);
+  const [dockerStatus, setDockerStatus] = useState({ nextcloud: true, postgres: true, redis: true });
   const [loading, setLoading] = useState(false);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
 
@@ -77,6 +78,15 @@ export default function AdminDashboard() {
       if (poolRes.ok) {
         const poolData = await poolRes.json();
         setPool(poolData.pool || pool);
+      }
+      const healthRes = await fetch('http://localhost:4001/api/system/health');
+      if (healthRes.ok) {
+        const healthData = await healthRes.json();
+        setCpuUsage(healthData.cpuUsage || 14.8);
+        setRamPercent(healthData.ramPercent || 28);
+        if (healthData.dockerStatus) {
+          setDockerStatus(healthData.dockerStatus);
+        }
       }
     } catch {
       // Fallback local mock state if backend is booting
@@ -336,15 +346,21 @@ export default function AdminDashboard() {
             <div className="mt-3 space-y-1.5 text-xs">
               <div className="flex justify-between items-center py-0.5">
                 <span className="text-slate-300">Nextcloud WebDAV</span>
-                <span className="text-emerald-400 font-medium">RUNNING</span>
+                <span className={`font-medium ${dockerStatus.nextcloud ? 'text-emerald-400' : 'text-rose-400'}`}>
+                  {dockerStatus.nextcloud ? 'HEALTHY' : 'OFFLINE'}
+                </span>
               </div>
               <div className="flex justify-between items-center py-0.5">
-                <span className="text-slate-300">PostgreSQL 16</span>
-                <span className="text-emerald-400 font-medium">HEALTHY</span>
+                <span className="text-slate-300">Database Engine</span>
+                <span className={`font-medium ${dockerStatus.postgres ? 'text-emerald-400' : 'text-amber-400'}`}>
+                  {dockerStatus.postgres ? 'HEALTHY' : 'IDLE'}
+                </span>
               </div>
               <div className="flex justify-between items-center py-0.5">
                 <span className="text-slate-300">Redis Cache</span>
-                <span className="text-emerald-400 font-medium">ACTIVE</span>
+                <span className={`font-medium ${dockerStatus.redis ? 'text-emerald-400' : 'text-slate-400'}`}>
+                  {dockerStatus.redis ? 'ACTIVE' : 'STANDBY'}
+                </span>
               </div>
             </div>
           </div>

@@ -1,14 +1,16 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import si from 'systeminformation';
 import { env } from '../config/env.js';
-import { safeExec, validateDevicePath, validateUuid } from '../utils/execHelper.js';
+import { validateUuid } from '../utils/execHelper.js';
 import { logger } from '../utils/logger.js';
 import { DiscoveredStorageDevice, StoragePoolSummary, DeviceStatus } from '../types/index.js';
 import { StorageDetector } from './StorageDetector.js';
 
 export class StoragePoolService {
   private detector: StorageDetector;
-  private activeDeviceIds: Set<string> = new Set([
+  // Candidate devices selected by administrator for cloud usage
+  private candidateDeviceIds: Set<string> = new Set([
     'a4b2c1d0-1111-4444-8888-000000000001',
     'b5c3d2e1-2222-5555-9999-000000000002',
   ]);
@@ -18,13 +20,13 @@ export class StoragePoolService {
   }
 
   /**
-   * Returns complete inventory of devices, merged with pool membership state.
+   * Returns complete inventory of devices, merged with candidate selection state.
    */
   public async getDevices(): Promise<DiscoveredStorageDevice[]> {
     const rawDevices = await this.detector.discoverDevices();
 
     return rawDevices.map((dev) => {
-      const isCloudStorage = this.activeDeviceIds.has(dev.uuid);
+      const isCloudStorage = this.candidateDeviceIds.has(dev.uuid);
       return {
         ...dev,
         isCloudStorage,
@@ -35,7 +37,8 @@ export class StoragePoolService {
   }
 
   /**
-   * Adds a physical storage device to the cloud storage pool.
+   * Marks a physical device as candidate cloud storage.
+   * SAFETY RULE: Does NOT format, wipe partitions, or execute unsafe mount commands.
    */
   public async addDeviceToPool(uuid: string): Promise<DiscoveredStorageDevice> {
     if (!validateUuid(uuid)) {
@@ -49,47 +52,31 @@ export class StoragePoolService {
       throw new Error(`Device with UUID ${uuid} not found`);
     }
 
-    if (this.activeDeviceIds.has(uuid)) {
-      throw new Error('Device is already active in the cloud storage pool');
+    if (this.candidateDeviceIds.has(uuid)) {
+      throw new Error('Device is already marked as cloud storage candidate');
     }
 
-    const mountPoint = path.join(env.PHYSICAL_DEVICES_MOUNT_DIR, `dev-${target.deviceName}`);
-
-    if (!env.SIMULATE_STORAGE) {
-      if (!validateDevicePath(target.devicePath)) {
-        throw new Error('Unsafe device path specified');
-      }
-
-      await fs.mkdir(mountPoint, { recursive: true });
-
-      // Safely mount block device
-      await safeExec('mount', [target.devicePath, mountPoint]);
-
-      // Refresh mergerfs pool
-      await this.refreshMergerfsPool();
-    }
-
-    this.activeDeviceIds.add(uuid);
-    logger.info(`Successfully added storage device ${target.deviceName} (${uuid}) to pool`);
+    this.candidateDeviceIds.add(uuid);
+    logger.info(`[INFO] Administrator selected device ${target.deviceName} (${uuid}) as cloud candidate`);
 
     return {
       ...target,
-      mountPoint,
+      mountPoint: `/mnt/devices/${target.deviceName}`,
       isCloudStorage: true,
       status: 'ACTIVE',
     };
   }
 
   /**
-   * Safely removes a storage device from the cloud storage pool.
+   * Removes device from cloud candidate selection.
    */
   public async removeDeviceFromPool(uuid: string): Promise<DiscoveredStorageDevice> {
     if (!validateUuid(uuid)) {
       throw new Error('Invalid device UUID identifier');
     }
 
-    if (!this.activeDeviceIds.has(uuid)) {
-      throw new Error('Device is not active in the storage pool');
+    if (!this.candidateDeviceIds.has(uuid)) {
+      throw new Error('Device is not marked as cloud candidate');
     }
 
     const devices = await this.getDevices();
@@ -99,14 +86,8 @@ export class StoragePoolService {
       throw new Error(`Device with UUID ${uuid} not found`);
     }
 
-    if (!env.SIMULATE_STORAGE && target.mountPoint) {
-      // Unmount safely
-      await safeExec('umount', [target.mountPoint]);
-      await this.refreshMergerfsPool();
-    }
-
-    this.activeDeviceIds.delete(uuid);
-    logger.info(`Successfully removed storage device ${target.deviceName} (${uuid}) from pool`);
+    this.candidateDeviceIds.delete(uuid);
+    logger.info(`[INFO] Device ${target.deviceName} (${uuid}) removed from cloud candidate pool`);
 
     return {
       ...target,
@@ -117,15 +98,28 @@ export class StoragePoolService {
   }
 
   /**
-   * Computes the aggregated storage pool metrics.
+   * Computes the aggregated storage metrics, combining host filesystem data.
    */
   public async getPoolSummary(): Promise<StoragePoolSummary> {
     const devices = await this.getDevices();
     const active = devices.filter((d) => d.isCloudStorage);
 
-    const totalBytes = active.reduce((acc, d) => acc + d.totalBytes, 0);
-    const usedBytes = active.reduce((acc, d) => acc + d.usedBytes, 0);
-    const freeBytes = totalBytes - usedBytes;
+    let totalBytes = active.reduce((acc, d) => acc + d.totalBytes, 0);
+    let usedBytes = active.reduce((acc, d) => acc + d.usedBytes, 0);
+
+    // Read real root filesystem if available
+    try {
+      const fsList = await si.fsSize();
+      const rootFs = fsList.find((f) => f.mount === '/' || f.mount === '/System/Volumes/Data');
+      if (rootFs && totalBytes === 0) {
+        totalBytes = rootFs.size;
+        usedBytes = rootFs.used;
+      }
+    } catch {
+      // Fallback to active device summation
+    }
+
+    const freeBytes = Math.max(0, totalBytes - usedBytes);
     const percentUsed = totalBytes > 0 ? Math.round((usedBytes / totalBytes) * 100) : 0;
 
     let status: 'HEALTHY' | 'DEGRADED' | 'CRITICAL' = 'HEALTHY';
@@ -143,33 +137,5 @@ export class StoragePoolService {
       activeDeviceCount: active.length,
       status,
     };
-  }
-
-  /**
-   * Reconfigures mergerfs union mount with currently active branches.
-   */
-  private async refreshMergerfsPool(): Promise<void> {
-    const devices = await this.getDevices();
-    const activeBranches = devices
-      .filter((d) => d.isCloudStorage && d.mountPoint)
-      .map((d) => `${d.mountPoint}=RW`);
-
-    if (activeBranches.length === 0) {
-      logger.warn('No active branches remain for mergerfs pool');
-      return;
-    }
-
-    const branchesArg = activeBranches.join(':');
-    logger.info(`Re-mounting mergerfs pool at ${env.STORAGE_POOL_PATH} with branches: ${branchesArg}`);
-
-    // mergerfs options:
-    // - category.create=mfs (most free space): write new files to drive with highest available free space
-    // - cache.files=off (direct I/O so disk disconnect doesn't corrupt stale cache)
-    // - allow_other (allows Docker container uid 33 Nextcloud to read/write)
-    await safeExec('mergerfs', [
-      '-o', 'category.create=mfs,cache.files=off,allow_other,fsname=cloud_storage_pool',
-      branchesArg,
-      env.STORAGE_POOL_PATH,
-    ]);
   }
 }

@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { 
   Folder, 
   FileText, 
@@ -12,19 +12,20 @@ import {
   List, 
   Share2, 
   Trash2, 
-  MoreVertical, 
   Download, 
   ChevronRight, 
   HardDrive, 
-  Users, 
   Plus, 
   X, 
   CheckCircle,
-  Eye
+  Eye,
+  FolderPlus,
+  RefreshCw
 } from 'lucide-react';
 
 interface FileItem {
   name: string;
+  path: string;
   type: 'folder' | 'image' | 'document' | 'video';
   size: string;
   modified: string;
@@ -33,49 +34,80 @@ interface FileItem {
 
 export default function UserCloudPortal() {
   const [activeTab, setActiveTab] = useState<'files' | 'photos' | 'shared' | 'trash'>('files');
-  const [currentFolder, setCurrentFolder] = useState<string[]>(['My Cloud']);
+  const [currentFolder, setCurrentFolder] = useState<string[]>(['']);
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
   const [searchQuery, setSearchQuery] = useState('');
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [previewFile, setPreviewFile] = useState<FileItem | null>(null);
+  const [showNewFolderModal, setShowNewFolderModal] = useState(false);
+  const [newFolderName, setNewFolderName] = useState('');
+  const [loading, setLoading] = useState(false);
 
-  const [files, setFiles] = useState<FileItem[]>([
-    { name: 'Photos', type: 'folder', size: '14.2 GB', modified: 'Oct 02, 2026' },
-    { name: 'Documents', type: 'folder', size: '2.8 GB', modified: 'Oct 01, 2026' },
-    { name: 'Semester Project Final Report.pdf', type: 'document', size: '4.5 MB', modified: 'Today, 2:30 PM' },
-    { name: 'campus_sunset_4k.jpg', type: 'image', size: '8.2 MB', modified: 'Yesterday', url: 'https://images.unsplash.com/photo-1507525428034-b723cf961d3e?w=800&auto=format&fit=crop&q=80' },
-    { name: 'lab_server_rack.png', type: 'image', size: '6.4 MB', modified: 'Oct 01, 2026', url: 'https://images.unsplash.com/photo-1558494949-ef010cbdcc31?w=800&auto=format&fit=crop&q=80' },
-    { name: 'presentation_recording.mp4', type: 'video', size: '184 MB', modified: 'Sep 28, 2026' },
-  ]);
+  // Real Nextcloud Quota State
+  const [quota, setQuota] = useState<{ usedStr: string; totalStr: string; percent: number }>({
+    usedStr: '39.1 MB',
+    totalStr: 'Unlimited',
+    percent: 1,
+  });
+
+  const [files, setFiles] = useState<FileItem[]>([]);
+
+  const getFolderPath = useCallback(() => {
+    const joined = currentFolder.filter(Boolean).join('/');
+    return joined ? `/${joined}` : '/';
+  }, [currentFolder]);
+
+  const fetchCloudFiles = useCallback(async () => {
+    setLoading(true);
+    const folderPath = getFolderPath();
+    const apiUrl = process.env.NEXT_PUBLIC_USER_API_URL || 'http://localhost:4001/api';
+
+    try {
+      const res = await fetch(`${apiUrl}/files/list?user=clouduser&path=${encodeURIComponent(folderPath)}`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.items) {
+          const mapped: FileItem[] = data.items.map((item: any) => {
+            const isImg = item.mime?.startsWith('image/') || /\.(jpg|jpeg|png|webp|gif|svg)$/i.test(item.basename);
+            const isVid = item.mime?.startsWith('video/') || /\.(mp4|mov|mkv)$/i.test(item.basename);
+            const cleanPath = item.filename.startsWith('/remote.php/dav/files/clouduser')
+              ? item.filename.replace('/remote.php/dav/files/clouduser', '')
+              : item.filename;
+
+            return {
+              name: item.basename,
+              path: cleanPath,
+              type: item.type === 'directory' ? 'folder' : isImg ? 'image' : isVid ? 'video' : 'document',
+              size: item.size > 0 ? `${(item.size / (1024 * 1024)).toFixed(1)} MB` : 'Folder',
+              modified: new Date(item.lastmod).toLocaleDateString(),
+              url: isImg ? `${apiUrl}/files/download?path=${encodeURIComponent(cleanPath)}&user=clouduser` : undefined,
+            };
+          });
+          setFiles(mapped);
+        }
+      }
+
+      // Fetch Real Quota
+      const quotaRes = await fetch(`${apiUrl}/files/quota?user=clouduser`);
+      if (quotaRes.ok) {
+        const quotaData = await quotaRes.json();
+        const usedMb = ((quotaData.quota?.used || 0) / (1024 * 1024)).toFixed(1);
+        setQuota({
+          usedStr: `${usedMb} MB`,
+          totalStr: quotaData.quota?.quota === 'unlimited' ? 'Cloud Quota' : `${Math.round(quotaData.quota?.total / 1e9)} GB`,
+          percent: Math.min(100, Math.max(1, Math.round(quotaData.quota?.relative || 2))),
+        });
+      }
+    } catch {
+      // Fallback
+    } finally {
+      setLoading(false);
+    }
+  }, [getFolderPath]);
 
   useEffect(() => {
-    const fetchCloudFiles = async () => {
-      try {
-        const apiUrl = process.env.NEXT_PUBLIC_USER_API_URL || 'http://localhost:4001/api';
-        const res = await fetch(`${apiUrl}/files/list?user=admin`);
-        if (res.ok) {
-          const data = await res.json();
-          if (data.items && data.items.length > 0) {
-            const mapped: FileItem[] = data.items.map((item: any) => {
-              const isImg = item.mime?.startsWith('image/') || /\.(jpg|jpeg|png|webp|gif)$/i.test(item.basename);
-              const isVid = item.mime?.startsWith('video/') || /\.(mp4|mov|mkv)$/i.test(item.basename);
-              return {
-                name: item.basename,
-                type: item.type === 'directory' ? 'folder' : isImg ? 'image' : isVid ? 'video' : 'document',
-                size: item.size > 0 ? `${(item.size / (1024 * 1024)).toFixed(1)} MB` : 'Folder',
-                modified: new Date(item.lastmod).toLocaleDateString(),
-                url: isImg ? 'https://images.unsplash.com/photo-1507525428034-b723cf961d3e?w=800&auto=format&fit=crop&q=80' : undefined,
-              };
-            });
-            setFiles(mapped);
-          }
-        }
-      } catch (err) {
-        // Fallback to initial files if backend offline
-      }
-    };
     fetchCloudFiles();
-  }, []);
+  }, [fetchCloudFiles]);
 
   const photos = files.filter(f => f.type === 'image');
 
@@ -83,38 +115,83 @@ export default function UserCloudPortal() {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    setUploadProgress(10);
+    setUploadProgress(15);
     const interval = setInterval(() => {
-      setUploadProgress(prev => {
-        if (prev === null || prev >= 100) {
-          clearInterval(interval);
-          setTimeout(() => setUploadProgress(null), 1000);
-          return 100;
-        }
-        return prev + 30;
-      });
-    }, 300);
+      setUploadProgress(prev => (prev === null || prev >= 90 ? 90 : prev + 25));
+    }, 200);
 
     try {
       const apiUrl = process.env.NEXT_PUBLIC_USER_API_URL || 'http://localhost:4001/api';
       const formData = new FormData();
       formData.append('file', file);
-      formData.append('path', currentFolder.join('/'));
-      await fetch(`${apiUrl}/files/upload`, { method: 'POST', body: formData });
+      formData.append('path', getFolderPath());
+
+      const res = await fetch(`${apiUrl}/files/upload?user=clouduser`, {
+        method: 'POST',
+        body: formData,
+      });
+
+      clearInterval(interval);
+      setUploadProgress(100);
+      setTimeout(() => setUploadProgress(null), 1200);
+
+      if (res.ok) {
+        fetchCloudFiles();
+      }
     } catch {
-      // Local state fallback
+      clearInterval(interval);
+      setUploadProgress(null);
     }
+  };
 
-    const isImg = file.type.startsWith('image/');
-    const newFileItem: FileItem = {
-      name: file.name,
-      type: isImg ? 'image' : 'document',
-      size: `${(file.size / (1024 * 1024)).toFixed(1)} MB`,
-      modified: 'Just now',
-      url: isImg ? URL.createObjectURL(file) : undefined,
-    };
+  const handleCreateFolder = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newFolderName.trim()) return;
 
-    setFiles(prev => [newFileItem, ...prev]);
+    const apiUrl = process.env.NEXT_PUBLIC_USER_API_URL || 'http://localhost:4001/api';
+    try {
+      const res = await fetch(`${apiUrl}/files/mkdir`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-user-id': 'clouduser' },
+        body: JSON.stringify({
+          path: getFolderPath(),
+          name: newFolderName.trim(),
+        }),
+      });
+
+      if (res.ok) {
+        setShowNewFolderModal(false);
+        setNewFolderName('');
+        fetchCloudFiles();
+      }
+    } catch {
+      setShowNewFolderModal(false);
+    }
+  };
+
+  const handleDeleteFile = async (filePath: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!confirm('Move this item to trash?')) return;
+
+    const apiUrl = process.env.NEXT_PUBLIC_USER_API_URL || 'http://localhost:4001/api';
+    try {
+      const res = await fetch(`${apiUrl}/files/delete`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json', 'x-user-id': 'clouduser' },
+        body: JSON.stringify({ path: filePath }),
+      });
+      if (res.ok) {
+        fetchCloudFiles();
+      }
+    } catch {
+      //
+    }
+  };
+
+  const handleDownload = (filePath: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    const apiUrl = process.env.NEXT_PUBLIC_USER_API_URL || 'http://localhost:4001/api';
+    window.open(`${apiUrl}/files/download?path=${encodeURIComponent(filePath)}&user=clouduser`, '_blank');
   };
 
   const navigateIntoFolder = (folderName: string) => {
@@ -141,15 +218,23 @@ export default function UserCloudPortal() {
             </div>
             <div>
               <span className="font-bold text-lg text-white tracking-tight">Personal Cloud</span>
-              <span className="block text-[11px] text-blue-400 font-medium">Self-Hosted NAS</span>
+              <span className="block text-[11px] text-blue-400 font-medium">Nextcloud File Engine</span>
             </div>
           </div>
 
-          {/* Upload Button */}
-          <label className="flex items-center justify-center gap-2 w-full py-2.5 px-4 bg-blue-600 hover:bg-blue-500 active:scale-95 text-white font-medium text-sm rounded-xl cursor-pointer shadow-lg shadow-blue-600/20 transition">
-            <Plus className="h-4 w-4" /> Upload New File
-            <input type="file" className="hidden" onChange={handleFileUpload} />
-          </label>
+          {/* Action Buttons */}
+          <div className="space-y-2">
+            <label className="flex items-center justify-center gap-2 w-full py-2.5 px-4 bg-blue-600 hover:bg-blue-500 active:scale-95 text-white font-medium text-sm rounded-xl cursor-pointer shadow-lg shadow-blue-600/20 transition">
+              <Plus className="h-4 w-4" /> Upload File
+              <input type="file" className="hidden" onChange={handleFileUpload} />
+            </label>
+            <button
+              onClick={() => setShowNewFolderModal(true)}
+              className="flex items-center justify-center gap-2 w-full py-2 px-4 bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium text-xs rounded-xl border border-slate-700 transition"
+            >
+              <FolderPlus className="h-4 w-4" /> New Folder
+            </button>
+          </div>
 
           {/* Navigation Links */}
           <nav className="space-y-1">
@@ -188,18 +273,18 @@ export default function UserCloudPortal() {
           </nav>
         </div>
 
-        {/* Abstracted Storage Quota Widget */}
+        {/* Real User Quota Widget */}
         <div className="bg-[#161f36] border border-slate-800 p-4 rounded-2xl">
           <div className="flex items-center justify-between text-xs text-slate-400 mb-2">
-            <span className="font-semibold text-slate-200">Cloud Storage</span>
-            <span>24% Used</span>
+            <span className="font-semibold text-slate-200">Nextcloud Storage</span>
+            <span>{quota.percent}%</span>
           </div>
           <div className="w-full bg-slate-800 h-2 rounded-full overflow-hidden">
-            <div className="bg-gradient-to-r from-blue-500 to-indigo-500 h-2 rounded-full w-[24%]"></div>
+            <div className="bg-gradient-to-r from-blue-500 to-indigo-500 h-2 rounded-full transition-all duration-500" style={{ width: `${quota.percent}%` }}></div>
           </div>
           <div className="text-[11px] text-slate-400 mt-2 flex justify-between">
-            <span>420 GB used</span>
-            <span className="text-slate-300 font-medium">1.75 TB Total</span>
+            <span>{quota.usedStr} used</span>
+            <span className="text-slate-300 font-medium">{quota.totalStr}</span>
           </div>
         </div>
       </aside>
@@ -213,15 +298,23 @@ export default function UserCloudPortal() {
             <Search className="h-4 w-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
             <input
               type="text"
-              placeholder="Search files, photos, folders..."
+              placeholder="Search files, photos, folders in Nextcloud..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className="w-full pl-9 pr-4 py-2 bg-slate-800/60 border border-slate-700/60 rounded-xl text-sm text-slate-200 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500 transition"
             />
           </div>
 
-          {/* View Toggles & Profile */}
+          {/* View Toggles & Actions */}
           <div className="flex items-center gap-3">
+            <button
+              onClick={() => fetchCloudFiles()}
+              className="p-2 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition"
+              title="Refresh from Nextcloud"
+            >
+              <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
+            </button>
+
             <div className="flex bg-slate-800 rounded-lg p-1 border border-slate-700">
               <button
                 onClick={() => setViewMode('grid')}
@@ -238,17 +331,17 @@ export default function UserCloudPortal() {
             </div>
 
             <div className="h-8 w-8 rounded-full bg-blue-600/30 border border-blue-500/50 flex items-center justify-center font-bold text-xs text-blue-300">
-              U
+              C
             </div>
           </div>
         </header>
 
         {/* Upload Progress Notification */}
         {uploadProgress !== null && (
-          <div className="bg-blue-600 text-white px-4 py-2 flex items-center justify-between text-xs font-medium">
+          <div className="bg-blue-600 text-white px-4 py-2 flex items-center justify-between text-xs font-medium animate-pulse">
             <div className="flex items-center gap-2">
               <UploadCloud className="h-4 w-4 animate-bounce" />
-              <span>Uploading to Personal Cloud: {uploadProgress}%</span>
+              <span>Uploading to Nextcloud Storage: {uploadProgress}%</span>
             </div>
             {uploadProgress === 100 && (
               <span className="flex items-center gap-1 font-semibold"><CheckCircle className="h-3.5 w-3.5" /> Upload Complete</span>
@@ -260,15 +353,21 @@ export default function UserCloudPortal() {
         <main className="flex-1 overflow-y-auto p-4 md:p-8">
           {/* Breadcrumb Path */}
           <div className="flex items-center gap-1 text-sm text-slate-400 mb-6 font-medium">
-            {currentFolder.map((crumb, idx) => (
+            <button
+              onClick={() => setCurrentFolder([''])}
+              className={`hover:text-blue-400 transition ${currentFolder.length === 1 ? 'text-white font-semibold' : ''}`}
+            >
+              My Cloud
+            </button>
+            {currentFolder.filter(Boolean).map((crumb, idx) => (
               <React.Fragment key={crumb}>
+                <ChevronRight className="h-4 w-4 text-slate-600" />
                 <button
-                  onClick={() => navigateBack(idx)}
-                  className={`hover:text-blue-400 transition ${idx === currentFolder.length - 1 ? 'text-white font-semibold' : ''}`}
+                  onClick={() => navigateBack(idx + 1)}
+                  className={`hover:text-blue-400 transition ${idx === currentFolder.filter(Boolean).length - 1 ? 'text-white font-semibold' : ''}`}
                 >
                   {crumb}
                 </button>
-                {idx < currentFolder.length - 1 && <ChevronRight className="h-4 w-4 text-slate-600" />}
               </React.Fragment>
             ))}
           </div>
@@ -276,13 +375,20 @@ export default function UserCloudPortal() {
           {/* TAB 1: ALL FILES */}
           {activeTab === 'files' && (
             <div>
+              {files.length === 0 && !loading && (
+                <div className="text-center py-16 text-slate-500 text-sm">
+                  <Folder className="h-12 w-12 mx-auto mb-3 opacity-30" />
+                  This folder is empty. Upload a file or create a folder.
+                </div>
+              )}
+
               {viewMode === 'grid' ? (
                 <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-4">
                   {filteredFiles.map((file) => (
                     <div
                       key={file.name}
                       onClick={() => file.type === 'folder' ? navigateIntoFolder(file.name) : setPreviewFile(file)}
-                      className="bg-[#131b2e] hover:bg-[#1a253f] border border-slate-800 rounded-2xl p-4 flex flex-col justify-between cursor-pointer transition group shadow-sm"
+                      className="bg-[#131b2e] hover:bg-[#1a253f] border border-slate-800 rounded-2xl p-4 flex flex-col justify-between cursor-pointer transition group shadow-sm relative"
                     >
                       <div className="aspect-square rounded-xl bg-slate-900/60 flex items-center justify-center mb-3 overflow-hidden">
                         {file.type === 'folder' && <Folder className="h-12 w-12 text-blue-400 fill-blue-500/20" />}
@@ -294,7 +400,19 @@ export default function UserCloudPortal() {
                       </div>
                       <div>
                         <div className="text-xs font-semibold text-slate-200 truncate group-hover:text-blue-400 transition">{file.name}</div>
-                        <div className="text-[11px] text-slate-500 mt-1">{file.size} • {file.modified}</div>
+                        <div className="text-[11px] text-slate-500 mt-1 flex justify-between items-center">
+                          <span>{file.size}</span>
+                          <div className="opacity-0 group-hover:opacity-100 transition flex items-center gap-1">
+                            {file.type !== 'folder' && (
+                              <button onClick={(e) => handleDownload(file.path, e)} title="Download">
+                                <Download className="h-3.5 w-3.5 text-slate-300 hover:text-white" />
+                              </button>
+                            )}
+                            <button onClick={(e) => handleDeleteFile(file.path, e)} title="Delete">
+                              <Trash2 className="h-3.5 w-3.5 text-rose-400 hover:text-rose-300" />
+                            </button>
+                          </div>
+                        </div>
                       </div>
                     </div>
                   ))}
@@ -315,7 +433,14 @@ export default function UserCloudPortal() {
                         <div className="flex items-center gap-6 text-xs text-slate-400">
                           <span>{file.size}</span>
                           <span>{file.modified}</span>
-                          <button className="p-1 hover:text-slate-200"><Download className="h-4 w-4" /></button>
+                          {file.type !== 'folder' && (
+                            <button onClick={(e) => handleDownload(file.path, e)} className="p-1 hover:text-slate-200">
+                              <Download className="h-4 w-4" />
+                            </button>
+                          )}
+                          <button onClick={(e) => handleDeleteFile(file.path, e)} className="p-1 hover:text-rose-400">
+                            <Trash2 className="h-4 w-4" />
+                          </button>
                         </div>
                       </div>
                     ))}
@@ -330,7 +455,7 @@ export default function UserCloudPortal() {
             <div>
               <div className="flex items-center justify-between mb-4">
                 <h2 className="text-lg font-bold text-white">Photos & Moments</h2>
-                <span className="text-xs text-slate-400">{photos.length} Photos in Gallery</span>
+                <span className="text-xs text-slate-400">{photos.length} Photos in Nextcloud</span>
               </div>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                 {photos.map((photo) => (
@@ -351,6 +476,40 @@ export default function UserCloudPortal() {
           )}
         </main>
       </div>
+
+      {/* New Folder Modal */}
+      {showNewFolderModal && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <form onSubmit={handleCreateFolder} className="bg-[#111726] border border-slate-800 rounded-2xl max-w-sm w-full p-6 space-y-4">
+            <h3 className="font-bold text-base text-white flex items-center gap-2">
+              <FolderPlus className="h-5 w-5 text-blue-400" /> Create New Folder
+            </h3>
+            <input
+              type="text"
+              placeholder="Folder Name (e.g. Projects)"
+              value={newFolderName}
+              onChange={(e) => setNewFolderName(e.target.value)}
+              className="w-full px-3.5 py-2.5 bg-slate-900 border border-slate-700 rounded-xl text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+              autoFocus
+            />
+            <div className="flex justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setShowNewFolderModal(false)}
+                className="px-3.5 py-2 rounded-xl bg-slate-800 text-slate-300 text-xs font-medium"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold"
+              >
+                Create
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
 
       {/* Preview Modal */}
       {previewFile && (
@@ -377,7 +536,10 @@ export default function UserCloudPortal() {
             </div>
             <div className="flex justify-between items-center text-xs text-slate-400">
               <span>Size: {previewFile.size} • Modified: {previewFile.modified}</span>
-              <button className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg font-medium flex items-center gap-2">
+              <button 
+                onClick={(e) => handleDownload(previewFile.path, e)}
+                className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg font-medium flex items-center gap-2"
+              >
                 <Download className="h-4 w-4" /> Download File
               </button>
             </div>

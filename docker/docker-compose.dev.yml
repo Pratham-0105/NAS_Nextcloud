@@ -11,6 +11,11 @@ services:
     volumes:
       - postgres_dev_data:/var/lib/postgresql/data
       - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     networks:
       - nas_network
 
@@ -22,6 +27,11 @@ services:
       - "6379:6379"
     volumes:
       - redis_dev_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     networks:
       - nas_network
 
@@ -32,20 +42,27 @@ services:
     ports:
       - "8080:80"
     depends_on:
-      - postgres
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     environment:
       POSTGRES_HOST: postgres
       POSTGRES_DB: nextcloud
       POSTGRES_USER: cloud_admin
       POSTGRES_PASSWORD: supersecure_admin_password_change_me
       REDIS_HOST: redis
-      NEXTCLOUD_ADMIN_USER: ncadmin
-      NEXTCLOUD_ADMIN_PASSWORD: change_this_strong_nc_password
+      NEXTCLOUD_ADMIN_USER: admin
+      NEXTCLOUD_ADMIN_PASSWORD: admin123
       NEXTCLOUD_TRUSTED_DOMAINS: "localhost 127.0.0.1 0.0.0.0 nextcloud *.onrender.com *.trycloudflare.com"
       OVERWRITEPROTOCOL: "http"
     volumes:
       - nextcloud_dev_data:/var/www/html
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/status.php"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
     networks:
       - nas_network
 
