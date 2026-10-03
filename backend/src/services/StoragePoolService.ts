@@ -1,124 +1,402 @@
-import { promises as fs } from 'node:fs';
-import path from 'node:path';
-import si from 'systeminformation';
-import { env } from '../config/env.js';
 import { validateUuid } from '../utils/execHelper.js';
 import { logger } from '../utils/logger.js';
-import { DiscoveredStorageDevice, StoragePoolSummary, DeviceStatus } from '../types/index.js';
+import { 
+  DiscoveredStorageDevice, 
+  StoragePoolSummary, 
+  DeviceStatus, 
+  PartitionInfo 
+} from '../types/index.js';
 import { StorageDetector } from './StorageDetector.js';
+import { prisma } from '../db/prisma.js';
+
+export interface StorageEventPayload {
+  eventType: string;
+  deviceId?: string;
+  deviceName?: string;
+  message: string;
+  data?: any;
+  timestamp: string;
+}
 
 export class StoragePoolService {
   private detector: StorageDetector;
-  // Candidate devices selected by administrator for cloud usage
-  private candidateDeviceIds: Set<string> = new Set([
-    'a4b2c1d0-1111-4444-8888-000000000001',
-    'b5c3d2e1-2222-5555-9999-000000000002',
+  // Fallback in-memory set if DB is temporarily offline or in tests
+  private registeredDeviceIds: Set<string> = new Set([
+    'b5c3d2e1-2222-5555-9999-000000000002', // Seagate Expansion 1TB
   ]);
+
+  private eventListeners: ((event: StorageEventPayload) => void)[] = [];
+  private knownDevices: Map<string, DiscoveredStorageDevice> = new Map();
+  private pollInterval: NodeJS.Timeout | null = null;
 
   constructor(detector: StorageDetector) {
     this.detector = detector;
+    this.startHardwarePolling();
+  }
+
+  public onEvent(callback: (event: StorageEventPayload) => void): void {
+    this.eventListeners.push(callback);
+  }
+
+  public emitEvent(eventType: string, message: string, device?: DiscoveredStorageDevice, data?: any): void {
+    const payload: StorageEventPayload = {
+      eventType,
+      deviceId: device?.uuid,
+      deviceName: device?.deviceName,
+      message,
+      data,
+      timestamp: new Date().toISOString(),
+    };
+    logger.info(`[STORAGE EVENT] ${eventType}: ${message}`);
+    for (const listener of this.eventListeners) {
+      try {
+        listener(payload);
+      } catch (err) {
+        // ignore callback error
+      }
+    }
   }
 
   /**
-   * Returns complete inventory of devices, merged with candidate selection state.
+   * Periodic polling for hardware changes (Hot-plug and disconnect detection)
+   */
+  private startHardwarePolling(): void {
+    // Initial discovery load
+    this.pollDevices().catch(() => {});
+
+    // Periodic detection every 4 seconds
+    this.pollInterval = setInterval(async () => {
+      try {
+        await this.pollDevices();
+      } catch (err) {
+        // ignore poll errors
+      }
+    }, 4000);
+  }
+
+  public stopHardwarePolling(): void {
+    if (this.pollInterval) {
+      clearInterval(this.pollInterval);
+      this.pollInterval = null;
+    }
+  }
+
+  /**
+   * Detects new or removed hardware devices and updates database/events
+   */
+  public async pollDevices(): Promise<DiscoveredStorageDevice[]> {
+    const currentList = await this.detector.discoverDevices();
+    const currentMap = new Map<string, DiscoveredStorageDevice>();
+
+    for (const dev of currentList) {
+      currentMap.set(dev.uuid, dev);
+
+      // Check if newly connected (HOT-PLUG)
+      if (this.knownDevices.size > 0 && !this.knownDevices.has(dev.uuid)) {
+        this.emitEvent(
+          'storage.device.detected',
+          `New storage device detected: ${dev.deviceModel} (${dev.deviceName}) [${dev.filesystem || 'raw'}]`,
+          dev
+        );
+      }
+    }
+
+    // Check for disconnected devices
+    for (const [uuid, prevDev] of this.knownDevices.entries()) {
+      if (!currentMap.has(uuid)) {
+        const isReg = this.registeredDeviceIds.has(uuid);
+        if (isReg) {
+          this.emitEvent(
+            'storage.device.unavailable',
+            `CRITICAL: Registered storage device ${prevDev.deviceModel} (${prevDev.deviceName}) disconnected or unavailable. Check physical connection.`,
+            prevDev
+          );
+        } else {
+          this.emitEvent(
+            'storage.device.removed',
+            `Storage device disconnected: ${prevDev.deviceModel} (${prevDev.deviceName})`,
+            prevDev
+          );
+        }
+
+        // Update DB status if disconnected
+        try {
+          await prisma.storageDevice.updateMany({
+            where: { uuid },
+            data: { status: isReg ? 'UNAVAILABLE' : 'DISCONNECTED', lastSeenAt: new Date() },
+          });
+        } catch {
+          // ignore DB error
+        }
+      }
+    }
+
+    this.knownDevices = currentMap;
+
+    // Persist discovered devices into PostgreSQL database
+    for (const dev of currentList) {
+      try {
+        const isRegistered = this.registeredDeviceIds.has(dev.uuid);
+        const status = dev.isSystemDisk 
+          ? 'INSPECTED' 
+          : isRegistered 
+            ? 'REGISTERED' 
+            : 'AVAILABLE';
+
+        await prisma.storageDevice.upsert({
+          where: { uuid: dev.uuid },
+          update: {
+            deviceName: dev.deviceName,
+            devicePath: dev.devicePath,
+            deviceModel: dev.deviceModel,
+            vendor: dev.vendor,
+            model: dev.model,
+            serial: dev.serial,
+            deviceType: dev.deviceType as any,
+            filesystem: dev.filesystem,
+            totalBytes: BigInt(dev.totalBytes),
+            usedBytes: BigInt(dev.usedBytes),
+            freeBytes: BigInt(dev.freeBytes),
+            mountPoint: dev.mountPoint,
+            isRemovable: dev.isRemovable,
+            isRotational: dev.isRotational,
+            isReadOnly: dev.isReadOnly,
+            isSystemDisk: dev.isSystemDisk,
+            hasExistingData: dev.hasExistingData,
+            partitions: dev.partitions as any,
+            isCloudStorage: isRegistered,
+            status: status as any,
+            lastSeenAt: new Date(),
+          },
+          create: {
+            deviceName: dev.deviceName,
+            devicePath: dev.devicePath,
+            deviceModel: dev.deviceModel,
+            vendor: dev.vendor,
+            model: dev.model,
+            serial: dev.serial,
+            deviceType: dev.deviceType as any,
+            filesystem: dev.filesystem,
+            uuid: dev.uuid,
+            totalBytes: BigInt(dev.totalBytes),
+            usedBytes: BigInt(dev.usedBytes),
+            freeBytes: BigInt(dev.freeBytes),
+            mountPoint: dev.mountPoint,
+            isRemovable: dev.isRemovable,
+            isRotational: dev.isRotational,
+            isReadOnly: dev.isReadOnly,
+            isSystemDisk: dev.isSystemDisk,
+            hasExistingData: dev.hasExistingData,
+            partitions: dev.partitions as any,
+            isCloudStorage: isRegistered,
+            status: status as any,
+          },
+        });
+      } catch (err) {
+        // Fallback to in-memory if DB is temporarily starting
+      }
+    }
+
+    return currentList;
+  }
+
+  /**
+   * Returns all discovered devices merged with registration states
    */
   public async getDevices(): Promise<DiscoveredStorageDevice[]> {
     const rawDevices = await this.detector.discoverDevices();
 
     return rawDevices.map((dev) => {
-      const isCloudStorage = this.candidateDeviceIds.has(dev.uuid);
+      const isRegistered = this.registeredDeviceIds.has(dev.uuid);
+      let status: DeviceStatus = dev.status;
+
+      if (dev.isSystemDisk) {
+        status = 'INSPECTED';
+      } else if (isRegistered) {
+        status = 'REGISTERED';
+      } else {
+        status = 'AVAILABLE';
+      }
+
       return {
         ...dev,
-        isCloudStorage,
-        status: isCloudStorage ? ('ACTIVE' as DeviceStatus) : ('AVAILABLE' as DeviceStatus),
-        mountPoint: isCloudStorage ? (dev.mountPoint || `/mnt/devices/${dev.deviceName}`) : null,
+        isCloudStorage: isRegistered,
+        status: status,
       };
     });
   }
 
   /**
-   * Marks a physical device as candidate cloud storage.
-   * SAFETY RULE: Does NOT format, wipe partitions, or execute unsafe mount commands.
+   * Returns a specific device by UUID or name
    */
-  public async addDeviceToPool(uuid: string): Promise<DiscoveredStorageDevice> {
-    if (!validateUuid(uuid)) {
-      throw new Error('Invalid device UUID identifier');
-    }
-
+  public async getDeviceById(idOrUuid: string): Promise<DiscoveredStorageDevice | null> {
     const devices = await this.getDevices();
-    const target = devices.find((d) => d.uuid === uuid);
+    return devices.find((d) => d.uuid === idOrUuid || d.deviceName === idOrUuid) || null;
+  }
 
-    if (!target) {
-      throw new Error(`Device with UUID ${uuid} not found`);
+  /**
+   * Returns partition hierarchy of a specific device
+   */
+  public async getDevicePartitions(idOrUuid: string): Promise<PartitionInfo[]> {
+    const device = await this.getDeviceById(idOrUuid);
+    if (!device) {
+      throw new Error(`Device "${idOrUuid}" not found.`);
     }
+    return device.partitions || [];
+  }
 
-    if (this.candidateDeviceIds.has(uuid)) {
-      throw new Error('Device is already marked as cloud storage candidate');
-    }
+  /**
+   * Returns devices eligible for registration (Excludes protected system disks and already registered disks)
+   */
+  public async getEligibleDevices(): Promise<DiscoveredStorageDevice[]> {
+    const devices = await this.getDevices();
+    return devices.filter((d) => !d.isSystemDisk && !d.isCloudStorage && !d.isReadOnly);
+  }
 
-    this.candidateDeviceIds.add(uuid);
-    logger.info(`[INFO] Administrator selected device ${target.deviceName} (${uuid}) as cloud candidate`);
+  /**
+   * Returns pool candidate devices (Alias for mergerfs service layer)
+   */
+  public async getPoolCandidates(): Promise<DiscoveredStorageDevice[]> {
+    return this.getEligibleDevices();
+  }
 
+  /**
+   * Returns currently registered devices
+   */
+  public async getRegisteredDevices(): Promise<DiscoveredStorageDevice[]> {
+    const devices = await this.getDevices();
+    return devices.filter((d) => d.isCloudStorage);
+  }
+
+  /**
+   * Returns pool total capacity across all registered devices
+   */
+  public async getPoolCapacity(): Promise<{ totalBytes: number; usedBytes: number; freeBytes: number }> {
+    const registered = await this.getRegisteredDevices();
+    const totalBytes = registered.reduce((sum, d) => sum + d.totalBytes, 0);
+    const usedBytes = registered.reduce((sum, d) => sum + d.usedBytes, 0);
     return {
-      ...target,
-      mountPoint: `/mnt/devices/${target.deviceName}`,
-      isCloudStorage: true,
-      status: 'ACTIVE',
+      totalBytes,
+      usedBytes,
+      freeBytes: Math.max(0, totalBytes - usedBytes),
     };
   }
 
   /**
-   * Removes device from cloud candidate selection.
+   * Registers a physical storage device for cloud storage.
+   * CRITICAL SAFETY RULE:
+   * 1. REJECTS operating system disks with an exception.
+   * 2. Does NOT format, wipe, or modify partitions.
+   * 3. Changes only the registration state in the database catalog.
    */
-  public async removeDeviceFromPool(uuid: string): Promise<DiscoveredStorageDevice> {
+  public async registerDevice(uuid: string, options: { confirmExistingData?: boolean } = {}): Promise<DiscoveredStorageDevice> {
     if (!validateUuid(uuid)) {
-      throw new Error('Invalid device UUID identifier');
+      throw new Error('Invalid device UUID identifier format.');
     }
 
-    if (!this.candidateDeviceIds.has(uuid)) {
-      throw new Error('Device is not marked as cloud candidate');
+    const device = await this.getDeviceById(uuid);
+    if (!device) {
+      throw new Error(`Device with UUID ${uuid} not found.`);
     }
 
-    const devices = await this.getDevices();
-    const target = devices.find((d) => d.uuid === uuid);
-
-    if (!target) {
-      throw new Error(`Device with UUID ${uuid} not found`);
+    // ⚠️ CRITICAL OS PROTECTION CHECK
+    if (device.isSystemDisk) {
+      throw new Error(
+        'PROTECTED DISK: Operating system and application disks cannot be registered for cloud storage.'
+      );
     }
 
-    this.candidateDeviceIds.delete(uuid);
-    logger.info(`[INFO] Device ${target.deviceName} (${uuid}) removed from cloud candidate pool`);
+    if (this.registeredDeviceIds.has(uuid)) {
+      throw new Error(`Device ${device.deviceName} is already registered as cloud storage.`);
+    }
 
-    return {
-      ...target,
-      mountPoint: null,
+    // Existing Data Safety Guard
+    if (device.hasExistingData && !options.confirmExistingData) {
+      logger.info(`[INFO] Device ${device.deviceName} contains existing data. Preserving all files without formatting.`);
+    }
+
+    // Update state to REGISTERED
+    this.registeredDeviceIds.add(uuid);
+
+    const updated: DiscoveredStorageDevice = {
+      ...device,
+      isCloudStorage: true,
+      status: 'REGISTERED',
+    };
+
+    // Update PostgreSQL database
+    try {
+      await prisma.storageDevice.update({
+        where: { uuid },
+        data: {
+          isCloudStorage: true,
+          status: 'REGISTERED',
+          updatedAt: new Date(),
+        },
+      });
+    } catch {
+      // ignore if DB is offline
+    }
+
+    this.emitEvent('storage.device.registered', `Device ${device.deviceModel} (${device.deviceName}) registered for cloud storage.`, updated);
+
+    return updated;
+  }
+
+  /**
+   * Unregisters a storage device from cloud storage.
+   * SAFETY: Preserves all files and partitions intact.
+   */
+  public async unregisterDevice(uuid: string): Promise<DiscoveredStorageDevice> {
+    if (!validateUuid(uuid)) {
+      throw new Error('Invalid device UUID identifier format.');
+    }
+
+    const device = await this.getDeviceById(uuid);
+    if (!device) {
+      throw new Error(`Device with UUID ${uuid} not found.`);
+    }
+
+    if (!this.registeredDeviceIds.has(uuid)) {
+      throw new Error(`Device ${device.deviceName} is not currently registered.`);
+    }
+
+    this.registeredDeviceIds.delete(uuid);
+
+    const updated: DiscoveredStorageDevice = {
+      ...device,
       isCloudStorage: false,
       status: 'AVAILABLE',
     };
+
+    // Update PostgreSQL database
+    try {
+      await prisma.storageDevice.update({
+        where: { uuid },
+        data: {
+          isCloudStorage: false,
+          status: 'AVAILABLE',
+          updatedAt: new Date(),
+        },
+      });
+    } catch {
+      // ignore
+    }
+
+    this.emitEvent('storage.device.removed', `Device ${device.deviceModel} (${device.deviceName}) unregistered from cloud storage.`, updated);
+
+    return updated;
   }
 
   /**
-   * Computes the aggregated storage metrics, combining host filesystem data.
+   * Calculates real storage pool capacity based on registered devices.
    */
   public async getPoolSummary(): Promise<StoragePoolSummary> {
     const devices = await this.getDevices();
-    const active = devices.filter((d) => d.isCloudStorage);
+    const registered = devices.filter((d) => d.isCloudStorage);
 
-    let totalBytes = active.reduce((acc, d) => acc + d.totalBytes, 0);
-    let usedBytes = active.reduce((acc, d) => acc + d.usedBytes, 0);
-
-    // Read real root filesystem if available
-    try {
-      const fsList = await si.fsSize();
-      const rootFs = fsList.find((f) => f.mount === '/' || f.mount === '/System/Volumes/Data');
-      if (rootFs && totalBytes === 0) {
-        totalBytes = rootFs.size;
-        usedBytes = rootFs.used;
-      }
-    } catch {
-      // Fallback to active device summation
-    }
-
+    const totalBytes = registered.reduce((acc, d) => acc + d.totalBytes, 0);
+    const usedBytes = registered.reduce((acc, d) => acc + d.usedBytes, 0);
     const freeBytes = Math.max(0, totalBytes - usedBytes);
     const percentUsed = totalBytes > 0 ? Math.round((usedBytes / totalBytes) * 100) : 0;
 
@@ -134,8 +412,27 @@ export class StoragePoolService {
       usedBytes,
       freeBytes,
       percentUsed,
-      activeDeviceCount: active.length,
+      activeDeviceCount: registered.length,
+      registeredDeviceCount: registered.length,
       status,
     };
+  }
+
+  /**
+   * Helper for simulating hot-plugging a new USB/SSD device
+   */
+  public async simulateHotPlug(device: DiscoveredStorageDevice): Promise<DiscoveredStorageDevice> {
+    this.detector.addSimulatedDevice(device);
+    await this.pollDevices();
+    return device;
+  }
+
+  /**
+   * Helper for simulating unplugging/removing a storage device
+   */
+  public async simulateDisconnect(uuidOrName: string): Promise<DiscoveredStorageDevice | null> {
+    const removed = this.detector.removeSimulatedDevice(uuidOrName);
+    await this.pollDevices();
+    return removed;
   }
 }

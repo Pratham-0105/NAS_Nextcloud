@@ -37,7 +37,8 @@ app.use(express.urlencoded({ extended: true }));
 // Rate limiting for authentication routes
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 100,
+  max: process.env.NODE_ENV === 'production' ? 100 : 5000,
+  skip: () => process.env.NODE_ENV !== 'production',
   message: { success: false, error: 'Too many authentication attempts, please try again later.' },
 });
 app.use('/api/auth', authLimiter);
@@ -76,6 +77,15 @@ app.use(errorHandler);
 
 // WebSocket Server for Real-Time Telemetry & Hardware Hot-Plug Notifications
 const wss = new WebSocketServer({ server, path: '/ws/telemetry' });
+
+// Broadcast storage pool events (hot-plug, registration, status change) to all connected Admin clients
+poolService.onEvent((eventPayload) => {
+  wss.clients.forEach((client) => {
+    if (client.readyState === WebSocket.OPEN) {
+      client.send(JSON.stringify({ type: eventPayload.eventType, data: eventPayload }));
+    }
+  });
+});
 
 wss.on('connection', (ws: WebSocket) => {
   logger.info('Client connected to real-time telemetry WebSocket');

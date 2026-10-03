@@ -23,8 +23,14 @@ enum DeviceType {
 }
 
 enum DeviceStatus {
+  DETECTED
+  INSPECTED
   AVAILABLE
+  SELECTED
+  REGISTERED
+  MOUNTED
   ACTIVE
+  UNAVAILABLE
   DEGRADED
   DISCONNECTED
   ERROR
@@ -51,19 +57,28 @@ model User {
 
 model StorageDevice {
   id              String         @id @default(uuid())
-  deviceName      String         // e.g. "sdb1", "nvme0n1p2"
-  devicePath      String         @unique // e.g. "/dev/sdb1"
+  deviceName      String         // e.g. "sdb", "sdb1"
+  devicePath      String         @unique // e.g. "/dev/sdb"
   deviceModel     String?        // e.g. "Samsung Portable SSD T7"
+  vendor          String?        // e.g. "Samsung", "Seagate"
+  model           String?        // e.g. "SSD 980 PRO"
+  serial          String?        // Hardware serial if accessible
   deviceType      DeviceType     @default(UNKNOWN)
   filesystem      String?        // e.g. "ext4", "exfat", "ntfs"
-  uuid            String         @unique
+  uuid            String         @unique // Partition or disk UUID
   totalBytes      BigInt
   usedBytes       BigInt
   freeBytes       BigInt
-  mountPoint      String?        // e.g. "/mnt/devices/usb-sdb1"
+  mountPoint      String?        // e.g. "/mnt/storage1"
+  isRemovable     Boolean        @default(false)
+  isRotational    Boolean        @default(false)
+  isReadOnly      Boolean        @default(false)
+  isSystemDisk    Boolean        @default(false) // Protected OS / application disk
+  hasExistingData Boolean        @default(false)
+  partitions      Json?          // Structured partition tree
   poolPriority    Int            @default(1)
   isCloudStorage  Boolean        @default(false)
-  status          DeviceStatus   @default(AVAILABLE)
+  status          DeviceStatus   @default(DETECTED)
   lastSeenAt      DateTime       @default(now())
   createdAt       DateTime       @default(now())
   updatedAt       DateTime       @updatedAt
@@ -75,7 +90,7 @@ model StorageEvent {
   deviceId    String?
   device      StorageDevice? @relation(fields: [deviceId], references: [id], onDelete: SetNull)
   severity    EventSeverity  @default(INFO)
-  eventType   String         // e.g. "DEVICE_DETECTED", "DEVICE_ADDED", "CAPACITY_WARNING"
+  eventType   String         // e.g. "storage.device.detected", "storage.device.registered"
   message     String
   metadata    Json?
   timestamp   DateTime       @default(now())
