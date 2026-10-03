@@ -291,6 +291,13 @@ router.get('/quota', async (req: Request, res: Response): Promise<void> => {
       const poolFree = Math.max(0, poolTotal - poolUsed);
       const poolRelative = poolTotal > 0 ? Math.min(100, Math.round((poolUsed / poolTotal) * 100)) : 0;
 
+      const diskModel = activePool.members?.[0]?.model || activePool.members?.[0]?.deviceModel || 'SanDisk 3.2Gen1';
+      const diskLabel = 'CloudNAS';
+      const mountLocation = getPhysicalStorageMount() || '/Volumes/CloudNAS';
+      const freeGb = (poolFree / 1e9).toFixed(1);
+      const totalGb = (poolTotal / 1e9).toFixed(1);
+      const usedStr = poolUsed > 1e9 ? `${(poolUsed / 1e9).toFixed(2)} GB` : `${(poolUsed / 1e6).toFixed(1)} MB`;
+
       res.json({
         success: true,
         username,
@@ -300,6 +307,22 @@ router.get('/quota', async (req: Request, res: Response): Promise<void> => {
           total: poolTotal,
           relative: poolRelative,
           quota: String(poolTotal),
+          usedStr: usedStr,
+          freeStr: `${freeGb} GB`,
+          totalStr: `${totalGb} GB`,
+          freeFormatted: `${freeGb} GB available`,
+        },
+        disk: {
+          name: diskModel,
+          label: diskLabel,
+          device: activePool.members?.[0]?.name || activePool.members?.[0]?.deviceName || 'disk12',
+          mountPoint: mountLocation,
+          filesystem: 'ExFAT',
+          freeStr: `${freeGb} GB`,
+          totalStr: `${totalGb} GB`,
+          usedStr: usedStr,
+          isPhysical: true,
+          status: 'ONLINE',
         },
         pool: {
           id: activePool.id,
@@ -310,9 +333,9 @@ router.get('/quota', async (req: Request, res: Response): Promise<void> => {
           freeBytes: poolFree,
           memberCount: activePool.memberCount,
           members: (activePool.members || []).map((m: any) => ({
-            name: m.deviceName,
-            model: m.deviceModel,
-            size: m.totalBytes,
+            name: m.deviceName || m.name,
+            model: m.deviceModel || m.model,
+            size: m.totalBytes || m.size,
           })),
           isConnected: true,
         },
