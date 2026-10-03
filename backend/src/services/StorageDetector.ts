@@ -1,3 +1,4 @@
+import { execSync } from 'node:child_process';
 import { env } from '../config/env.js';
 import { safeExec } from '../utils/execHelper.js';
 import { logger } from '../utils/logger.js';
@@ -26,31 +27,60 @@ const PROTECTED_SYSTEM_MOUNTS = [
 
 export class StorageDetector {
   private simulatedDevices: DiscoveredStorageDevice[] = [];
+  private currentMode: 'auto' | 'real' | 'simulation' = 
+    (env.STORAGE_DETECTION_MODE as any) || (env.SIMULATE_STORAGE ? 'simulation' : 'auto');
 
   constructor() {
     this.resetSimulatedDevices();
   }
 
+  public setMode(mode: 'auto' | 'real' | 'simulation'): void {
+    this.currentMode = mode;
+    logger.info(`[STORAGE DETECTOR] Storage detection mode set to: ${mode}`);
+  }
+
+  public getMode(): 'auto' | 'real' | 'simulation' {
+    return this.currentMode;
+  }
+
   /**
    * Discovers physical storage devices on the host machine.
    * Modes:
-   *  - 'real': Attempt real hardware detection via lsblk. NEVER falls back to simulation.
-   *  - 'auto': Linux -> real hardware detection; macOS/Windows -> SIMULATION.
+   *  - 'real': Attempt real hardware detection via lsblk (Linux) or diskutil (macOS). NEVER falls back to simulation.
+   *  - 'auto': Real hardware detection on Linux/macOS; fallback to simulation if no physical drives available.
    *  - 'simulation': Returns simulation catalog marked with detectionSource="SIMULATION".
    */
   public async discoverDevices(): Promise<DiscoveredStorageDevice[]> {
-    const mode = env.STORAGE_DETECTION_MODE || (env.SIMULATE_STORAGE ? 'simulation' : 'auto');
+    const mode = this.currentMode;
 
     if (mode === 'simulation') {
       return this.getSimulatedDevices();
     }
 
-    if (mode === 'auto' && process.platform !== 'linux') {
-      logger.info(`[STORAGE DETECTION] Platform is ${process.platform} (non-Linux). Using SIMULATION mode.`);
+    if (process.platform === 'darwin') {
+      try {
+        const darwinDevices = await this.detectDarwinHardware();
+        if (darwinDevices && darwinDevices.length > 0) {
+          // If mode is real, always return real hardware
+          if (mode === 'real') {
+            return darwinDevices;
+          }
+          // If mode is auto: return real Darwin devices
+          return darwinDevices;
+        }
+      } catch (err: any) {
+        if (mode === 'real') {
+          logger.error(`[CRITICAL] Real hardware detection failed on macOS in 'real' mode:`, err.message);
+          throw new Error(`Real hardware detection failed on macOS: ${err.message}.`);
+        }
+        logger.warn(`[STORAGE DETECTION] macOS diskutil probe issue: ${err.message}`);
+      }
+
+      // If mode is auto and no darwin devices found, return simulation
       return this.getSimulatedDevices();
     }
 
-    // Must attempt real hardware detection
+    // Must attempt real hardware detection on Linux
     try {
       const devices = await this.detectLinuxHardware();
       return devices;
@@ -108,6 +138,166 @@ export class StorageDetector {
     }
 
     return devices;
+  }
+
+  /**
+   * Real macOS hardware detector using native diskutil and plutil
+   */
+  public async detectDarwinHardware(): Promise<DiscoveredStorageDevice[]> {
+    try {
+      const rawList = execSync('/usr/sbin/diskutil list -plist physical | /usr/bin/plutil -convert json -o - -', {
+        encoding: 'utf8',
+        timeout: 4000,
+      });
+      const listData = JSON.parse(rawList);
+      const devices: DiscoveredStorageDevice[] = [];
+      const wholeDisks: string[] = listData.WholeDisks || ['disk0'];
+
+      // Also get APFS volumes for partition mapping
+      let apfsList: any = {};
+      try {
+        const rawApfs = execSync('/usr/sbin/diskutil apfs list -plist | /usr/bin/plutil -convert json -o - -', {
+          encoding: 'utf8',
+          timeout: 4000,
+        });
+        apfsList = JSON.parse(rawApfs);
+      } catch {
+        // ignore if not apfs
+      }
+
+      for (const diskId of wholeDisks) {
+        if (!diskId) continue;
+
+        let info: any = {};
+        try {
+          const rawInfo = execSync(`/usr/sbin/diskutil info -plist ${diskId} | /usr/bin/plutil -convert json -o - -`, {
+            encoding: 'utf8',
+            timeout: 3000,
+          });
+          info = JSON.parse(rawInfo);
+        } catch {
+          continue;
+        }
+
+        // Only include true physical disks
+        if (info.VirtualOrPhysical && info.VirtualOrPhysical !== 'Physical') {
+          continue;
+        }
+
+        const isRotational = !(info.SolidState ?? true);
+        const isRemovable = Boolean(info.RemovableMedia || info.Removable || info.RemovableMediaOrExternalDevice);
+        const bus = (info.BusProtocol || '').toLowerCase();
+
+        let transport: StorageTransport = 'Unknown';
+        if (bus.includes('usb')) transport = 'USB';
+        else if (bus.includes('pci') || bus.includes('nvme') || bus.includes('apple')) transport = 'NVMe';
+        else if (bus.includes('sata')) transport = 'SATA';
+        else if (bus.includes('scsi')) transport = 'SCSI';
+
+        let deviceType: DeviceType = 'UNKNOWN';
+        if (transport === 'USB') {
+          deviceType = isRemovable ? (isRotational ? 'USB_HDD' : 'USB_SSD') : 'USB_SSD';
+        } else if (transport === 'NVMe') {
+          deviceType = 'NVME';
+        } else {
+          deviceType = isRotational ? 'INTERNAL_HDD' : 'INTERNAL_SSD';
+        }
+
+        const partitions: PartitionInfo[] = [];
+        let isSystemDisk = false;
+
+        // Parse partitions from diskutil list
+        const diskItem = (listData.AllDisksAndPartitions || []).find((d: any) => d.DeviceIdentifier === diskId);
+        if (diskItem && Array.isArray(diskItem.Partitions)) {
+          for (const p of diskItem.Partitions) {
+            partitions.push({
+              name: p.DeviceIdentifier,
+              path: `/dev/${p.DeviceIdentifier}`,
+              size: p.Size || 0,
+              filesystem: p.Content || 'unknown',
+              uuid: p.DiskUUID || p.VolumeUUID || `${diskId}-${p.DeviceIdentifier}`,
+              label: p.VolumeName || p.Content || null,
+              mountPoint: null,
+              isSystemPartition: false,
+              hasExistingData: true,
+            });
+          }
+        }
+
+        // Parse volumes from APFS containers linked to this disk
+        if (Array.isArray(apfsList.Containers)) {
+          for (const c of apfsList.Containers) {
+            const hasStore = (c.PhysicalStores || []).some((s: any) => s.DeviceIdentifier && s.DeviceIdentifier.startsWith(diskId));
+            if (hasStore && Array.isArray(c.Volumes)) {
+              for (const v of c.Volumes) {
+                const isRoot = v.MountPoint === '/' || (v.MountedSnapshots && v.MountedSnapshots.some((s: any) => s.SnapshotMountPoint === '/'));
+                if (isRoot) isSystemDisk = true;
+
+                partitions.push({
+                  name: v.DeviceIdentifier,
+                  path: `/dev/${v.DeviceIdentifier}`,
+                  size: v.CapacityInUse || v.CapacityConsumed || 0,
+                  usedBytes: v.CapacityInUse || 0,
+                  freeBytes: Math.max(0, (v.CapacityConsumed || 0) - (v.CapacityInUse || 0)),
+                  filesystem: 'apfs',
+                  uuid: v.DiskUUID || v.VolumeUUID || `${diskId}-${v.DeviceIdentifier}`,
+                  label: v.Name || v.VolumeName || 'APFS Volume',
+                  mountPoint: v.MountPoint || (isRoot ? '/' : null),
+                  isSystemPartition: isRoot,
+                  hasExistingData: true,
+                });
+              }
+            }
+          }
+        }
+
+        // In macOS, internal disk0 contains rootfs / (APFS sealed snapshot on synthesized container)
+        if (diskId === 'disk0' || info.Internal === true || info.MountPoint === '/') {
+          isSystemDisk = true;
+        }
+
+        const vendorName = info.MediaName && info.MediaName.toUpperCase().includes('APPLE')
+          ? 'Apple'
+          : (info.Vendor || (info.MediaName ? info.MediaName.split(' ')[0] : 'Generic'));
+
+        const totalBytes = info.TotalSize || 0;
+        const usedBytes = partitions.reduce((sum, p) => sum + (p.usedBytes || 0), 0);
+        const freeBytes = Math.max(0, totalBytes - usedBytes);
+
+        devices.push({
+          deviceName: diskId,
+          devicePath: `/dev/${diskId}`,
+          deviceModel: info.MediaName || info.IORegistryEntryName || `${vendorName} Storage Disk`,
+          vendor: vendorName,
+          model: info.MediaName || null,
+          serial: info.DeviceSerialNumber || null,
+          deviceType,
+          transport,
+          detectionSource: 'REAL_HARDWARE',
+          filesystem: partitions[0]?.filesystem || (isSystemDisk ? 'apfs' : 'unknown'),
+          uuid: info.DiskUUID || `darwin-disk-${diskId}`,
+          totalBytes,
+          usedBytes,
+          freeBytes,
+          mountPoint: isSystemDisk ? '/' : (partitions.find(p => p.mountPoint)?.mountPoint || null),
+          isRemovable,
+          isRotational,
+          isReadOnly: Boolean(info.Writable === false),
+          isSystemDisk,
+          hasExistingData: partitions.some(p => p.hasExistingData),
+          isCloudStorage: false,
+          isSimulated: false,
+          status: isSystemDisk ? 'INSPECTED' : 'AVAILABLE',
+          partitions,
+          lastSeenAt: new Date().toISOString(),
+        });
+      }
+
+      return devices;
+    } catch (err: any) {
+      logger.error(`[STORAGE DETECTION] macOS diskutil execution error:`, err.message);
+      throw err;
+    }
   }
 
   private processBlockDisk(dev: RawBlockDevice, source: DetectionSource): DiscoveredStorageDevice | null {

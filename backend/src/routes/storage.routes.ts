@@ -53,6 +53,51 @@ function requireAdminAuthorization(req: Request, res: Response, next: NextFuncti
 // Apply admin authorization to all storage management endpoints
 router.use(requireAdminAuthorization);
 
+// GET /api/storage/mode - Get current storage detection mode
+router.get('/mode', (req: Request, res: Response): void => {
+  res.json({
+    success: true,
+    mode: detector.getMode(),
+    platform: process.platform,
+    isLinux: process.platform === 'linux',
+    isDarwin: process.platform === 'darwin',
+  });
+});
+
+// POST /api/storage/mode - Switch storage detection mode
+router.post('/mode', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { mode } = req.body || {};
+    if (!['auto', 'real', 'simulation'].includes(mode)) {
+      res.status(400).json({ success: false, error: 'Invalid mode. Supported: auto, real, simulation' });
+      return;
+    }
+    detector.setMode(mode);
+    const devices = await poolService.pollDevices();
+    res.json({
+      success: true,
+      message: `Storage detection mode switched to ${mode.toUpperCase()}`,
+      mode,
+      deviceCount: devices.length,
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// POST /api/storage/devices/reset-all - Unregister all cloud devices back to available
+router.post('/devices/reset-all', async (req: Request, res: Response): Promise<void> => {
+  try {
+    await poolService.unregisterAllDevices();
+    res.json({
+      success: true,
+      message: 'All storage devices unregistered. Storage pool reset to 0 bytes.',
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // GET /api/storage/devices - Full inventory with category grouping
 router.get('/devices', async (req: Request, res: Response): Promise<void> => {
   try {

@@ -78,6 +78,14 @@ async function runPhase3Tests() {
   const adminAuth = { Authorization: `Bearer ${adminToken}` };
   const userAuth = { Authorization: `Bearer ${userToken}` };
 
+  // Ensure simulation baseline is active for Phase 3 simulated test suite
+  await request('/api/storage/mode', {
+    method: 'POST',
+    headers: adminAuth,
+    body: JSON.stringify({ mode: 'simulation' }),
+  });
+  await request('/api/storage/devices/simulate-reset', { method: 'POST', headers: adminAuth });
+
   // 1. Storage Detection
   logSection('1. Testing Storage Detection');
   try {
@@ -445,8 +453,13 @@ async function runPhase3Tests() {
     results['macOS Simulation'] = 'FAIL';
   }
 
-  // Clean reset simulated catalog
-  await request('/api/storage/devices/simulate-reset', { method: 'POST', headers: adminAuth });
+  // Clean reset simulated catalog and restore auto mode
+  await request('/api/storage/devices/reset-all', { method: 'POST', headers: adminAuth });
+  await request('/api/storage/mode', {
+    method: 'POST',
+    headers: adminAuth,
+    body: JSON.stringify({ mode: 'auto' }),
+  });
 
   // Final Summary Table
   logSection('FINAL PHASE 3 TEST RESULTS');

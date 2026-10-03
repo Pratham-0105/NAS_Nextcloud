@@ -248,6 +248,139 @@ export default function AdminDashboard() {
     }
   };
 
+  const handleResetPool = async () => {
+    if (!confirm('Unregister all devices from cloud storage and reset pool to 0 bytes? (Existing files remain untouched)')) {
+      return;
+    }
+    setLoading(true);
+    try {
+      const res = await fetch('http://localhost:4001/api/storage/devices/reset-all', {
+        method: 'POST',
+        headers: getAdminHeaders(),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setActionMessage(data.message || 'All devices unregistered successfully.');
+        fetchDevices();
+      } else {
+        alert(data.error || 'Failed to reset storage pool.');
+      }
+    } catch (err: any) {
+      alert(`Reset error: ${err.message}`);
+    } finally {
+      setLoading(false);
+      setTimeout(() => setActionMessage(null), 5000);
+    }
+  };
+
+  const handleSetMode = async (mode: 'real' | 'simulation' | 'auto') => {
+    setLoading(true);
+    try {
+      const res = await fetch('http://localhost:4001/api/storage/mode', {
+        method: 'POST',
+        headers: getAdminHeaders(),
+        body: JSON.stringify({ mode }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setActionMessage(data.message || `Storage detection mode switched to ${mode.toUpperCase()}`);
+        fetchDevices();
+      } else {
+        alert(data.error || 'Failed to switch mode.');
+      }
+    } catch (err: any) {
+      alert(`Mode switch error: ${err.message}`);
+    } finally {
+      setLoading(false);
+      setTimeout(() => setActionMessage(null), 5000);
+    }
+  };
+
+  const handleAttachTestDevice = async (type: 'SSD' | 'HDD' | 'FLASH') => {
+    setLoading(true);
+    try {
+      const dev = type === 'SSD' ? {
+        deviceName: 'sde',
+        deviceModel: 'Crucial X8 1TB Portable USB SSD [CANDIDATE]',
+        vendor: 'Crucial',
+        model: 'X8 Portable SSD',
+        serial: 'CT1000X8SSD9',
+        deviceType: 'USB_SSD',
+        transport: 'USB',
+        detectionSource: 'SIMULATION',
+        filesystem: 'ext4',
+        uuid: 'e8f7a6b5-5555-8888-cccc-000000000005',
+        totalBytes: 1_000_000_000_000,
+        availableBytes: 880_000_000_000,
+        isRemovable: true,
+        isRotational: false,
+        isReadOnly: false,
+        isSystemDisk: false,
+        hasExistingData: true,
+        isCloudStorage: false,
+        status: 'AVAILABLE',
+      } : type === 'HDD' ? {
+        deviceName: 'sdf',
+        deviceModel: 'Western Digital My Passport 2TB USB HDD [CANDIDATE]',
+        vendor: 'Western Digital',
+        model: 'My Passport',
+        serial: 'WDBPKJ0020BBL',
+        deviceType: 'USB_HDD',
+        transport: 'USB',
+        detectionSource: 'SIMULATION',
+        filesystem: 'exfat',
+        uuid: 'f9a8b7c6-6666-9999-dddd-000000000006',
+        totalBytes: 2_000_000_000_000,
+        availableBytes: 1_700_000_000_000,
+        isRemovable: true,
+        isRotational: true,
+        isReadOnly: false,
+        isSystemDisk: false,
+        hasExistingData: true,
+        isCloudStorage: false,
+        status: 'AVAILABLE',
+      } : {
+        deviceName: 'sdg',
+        deviceModel: 'SanDisk Ultra Flair 128GB Flash [CANDIDATE]',
+        vendor: 'SanDisk',
+        model: 'Ultra Flair 3.0',
+        serial: 'SDCZ73-128G',
+        deviceType: 'USB_FLASH',
+        transport: 'USB',
+        detectionSource: 'SIMULATION',
+        filesystem: 'vfat',
+        uuid: 'a1b2c3d4-7777-aaaa-eeee-000000000007',
+        totalBytes: 128_000_000_000,
+        availableBytes: 110_000_000_000,
+        isRemovable: true,
+        isRotational: false,
+        isReadOnly: false,
+        isSystemDisk: false,
+        hasExistingData: false,
+        isCloudStorage: false,
+        status: 'AVAILABLE',
+      };
+
+      const res = await fetch('http://localhost:4001/api/storage/devices/simulate-hotplug', {
+        method: 'POST',
+        headers: getAdminHeaders(),
+        body: JSON.stringify(dev),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setActionMessage(data.message || `Candidate storage attached: ${dev.deviceModel}`);
+        fetchDevices();
+      } else {
+        alert(data.error || 'Failed to attach candidate device.');
+      }
+    } catch (err: any) {
+      alert(`Error attaching device: ${err.message}`);
+    } finally {
+      setLoading(false);
+      setTimeout(() => setActionMessage(null), 5000);
+    }
+  };
+
   // Group devices into 3 distinct sections
   const activeStorage = devices.filter((d) => d.isCloudStorage && !d.isSystemDisk);
   const availableDevices = devices.filter((d) => !d.isCloudStorage && !d.isSystemDisk);
@@ -277,20 +410,54 @@ export default function AdminDashboard() {
           </div>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-2.5">
+          {/* Mode Switcher */}
+          <div className="flex items-center bg-slate-900 border border-slate-700/80 rounded-lg p-1 text-xs">
+            <button
+              onClick={() => handleSetMode('real')}
+              disabled={loading}
+              className={`px-3 py-1 rounded-md font-semibold transition ${
+                devices.length > 0 && devices.some(d => d.detectionSource === 'REAL_HARDWARE')
+                  ? 'bg-emerald-600 text-white shadow-sm'
+                  : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              ● Real Hardware
+            </button>
+            <button
+              onClick={() => handleSetMode('simulation')}
+              disabled={loading}
+              className={`px-3 py-1 rounded-md font-semibold transition ${
+                devices.length > 0 && devices.every(d => d.detectionSource === 'SIMULATION')
+                  ? 'bg-amber-600 text-white shadow-sm'
+                  : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              ◌ Simulation Sandbox
+            </button>
+          </div>
+
           <button 
             onClick={fetchDevices}
-            className="flex items-center gap-2 px-3.5 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-sm font-medium border border-slate-700 transition"
+            disabled={loading}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-medium border border-slate-700 transition text-slate-200"
           >
-            <RefreshCw className="h-4 w-4" /> Rescan Host Disks
+            <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} /> Rescan Disks
+          </button>
+          <button 
+            onClick={handleResetPool}
+            disabled={loading}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-rose-950/40 hover:bg-rose-900/50 text-xs font-medium border border-rose-800/40 text-rose-300 transition"
+          >
+            <Trash2 className="h-3.5 w-3.5" /> Reset Pool
           </button>
           <a 
             href="http://localhost:3002" 
             target="_blank" 
             rel="noreferrer"
-            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-sm font-medium text-white transition shadow-sm"
+            className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-xs font-semibold text-white transition shadow-sm"
           >
-            Open User Portal <ExternalLink className="h-4 w-4" />
+            User Portal <ExternalLink className="h-3.5 w-3.5" />
           </a>
         </div>
       </header>
@@ -306,29 +473,31 @@ export default function AdminDashboard() {
         )}
 
         {/* Environment Mode Banner */}
-        {devices.length > 0 && devices.some(d => d.detectionSource === 'SIMULATION') ? (
-          <div className="bg-amber-950/40 border border-amber-500/40 text-amber-200 px-4 py-3 rounded-2xl flex items-center justify-between text-xs shadow-md">
+        {devices.length > 0 && devices.some(d => d.detectionSource === 'REAL_HARDWARE') ? (
+          <div className="bg-emerald-950/40 border border-emerald-500/40 text-emerald-200 px-4 py-3 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs shadow-md">
+            <div className="flex items-center gap-2.5">
+              <span className="h-2.5 w-2.5 rounded-full bg-emerald-400 shrink-0 animate-pulse"></span>
+              <span className="font-bold text-emerald-300">Environment: Real Hardware Storage Detection Active</span>
+              <span className="text-slate-300 hidden md:inline">• Probing real physical disks from host kernel (Internal Apple/NVMe SSD & connected external USB storage).</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="px-2.5 py-1 rounded-md bg-emerald-500/20 text-emerald-300 font-mono text-[10px] font-bold uppercase tracking-wider border border-emerald-500/30">
+                ● REAL HARDWARE
+              </span>
+            </div>
+          </div>
+        ) : (
+          <div className="bg-amber-950/40 border border-amber-500/40 text-amber-200 px-4 py-3 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs shadow-md">
             <div className="flex items-center gap-2.5">
               <span className="h-2.5 w-2.5 rounded-full bg-amber-400 animate-pulse shrink-0"></span>
-              <span className="font-bold text-amber-300">Environment: macOS Simulation Mode</span>
-              <span className="text-slate-300 hidden md:inline">• Operating in simulated storage mode for local development. Physical disks are not modified.</span>
+              <span className="font-bold text-amber-300">Environment: Simulation Sandbox Active</span>
+              <span className="text-slate-300 hidden md:inline">• Operating in simulation sandbox mode. Use &quot;● Real Hardware&quot; button above to switch to real host physical disks.</span>
             </div>
             <span className="px-2.5 py-1 rounded-md bg-amber-500/20 text-amber-300 font-mono text-[10px] font-bold uppercase tracking-wider border border-amber-500/30">
               SIMULATION
             </span>
           </div>
-        ) : devices.length > 0 ? (
-          <div className="bg-emerald-950/40 border border-emerald-500/40 text-emerald-200 px-4 py-3 rounded-2xl flex items-center justify-between text-xs shadow-md">
-            <div className="flex items-center gap-2.5">
-              <span className="h-2.5 w-2.5 rounded-full bg-emerald-400 shrink-0"></span>
-              <span className="font-bold text-emerald-300">Environment: Linux Host OS</span>
-              <span className="text-slate-300 hidden md:inline">• Real hardware storage detection active via Linux kernel (lsblk / udev).</span>
-            </div>
-            <span className="px-2.5 py-1 rounded-md bg-emerald-500/20 text-emerald-300 font-mono text-[10px] font-bold uppercase tracking-wider border border-emerald-500/30">
-              ● REAL HARDWARE
-            </span>
-          </div>
-        ) : null}
+        )}
 
         {/* Hot-Plug Notification Card */}
         {hotPlugCandidate && (
@@ -463,6 +632,14 @@ export default function AdminDashboard() {
               </h2>
               <p className="text-xs text-slate-400 mt-0.5">Disks explicitly registered to participate in the cloud storage pool</p>
             </div>
+            {activeStorage.length > 0 && (
+              <button
+                onClick={handleResetPool}
+                className="px-3 py-1.5 text-xs bg-rose-600/10 hover:bg-rose-600/20 text-rose-400 border border-rose-500/30 rounded-lg font-medium transition flex items-center gap-1.5"
+              >
+                <Trash2 className="h-3 w-3" /> Unregister All
+              </button>
+            )}
           </div>
 
           <div className="overflow-x-auto">
@@ -480,14 +657,185 @@ export default function AdminDashboard() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800">
-                {activeStorage.map((dev) => (
-                  <React.Fragment key={dev.uuid}>
-                    <tr className="hover:bg-slate-800/30 transition">
+                {activeStorage.length === 0 ? (
+                  <tr>
+                    <td colSpan={8} className="py-8 text-center text-xs text-slate-500">
+                      No storage devices currently registered. Select a candidate drive below to add it to your cloud storage pool.
+                    </td>
+                  </tr>
+                ) : (
+                  activeStorage.map((dev) => (
+                    <React.Fragment key={dev.uuid}>
+                      <tr className="hover:bg-slate-800/30 transition">
+                        <td className="py-3.5 px-5">
+                          <div className="font-semibold text-white flex items-center gap-2">
+                            <button onClick={() => togglePartitions(dev.deviceName)} className="text-slate-400 hover:text-white">
+                              {expandedPartitions[dev.deviceName] ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+                            </button>
+                            <span>{dev.deviceModel || dev.model || 'Storage Device'}</span>
+                            {dev.detectionSource === 'REAL_HARDWARE' ? (
+                              <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
+                                ● REAL HARDWARE
+                              </span>
+                            ) : (
+                              <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-500/15 text-amber-400 border border-amber-500/30">
+                                ● SIMULATION
+                              </span>
+                            )}
+                            <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-blue-500/15 text-blue-300 border border-blue-500/30">
+                              {dev.transport || 'Unknown'}
+                            </span>
+                          </div>
+                          <div className="text-xs font-mono text-slate-400 pl-6 flex items-center gap-2 mt-0.5">
+                            <span>{dev.devicePath} ({dev.deviceName})</span>
+                            <span>•</span>
+                            <span>{dev.isRotational ? 'Rotational (HDD)' : 'Solid-State (SSD/Flash)'}</span>
+                          </div>
+                        </td>
+                        <td className="py-3.5 px-5">
+                          <span className="px-2 py-0.5 rounded text-xs bg-slate-800 text-slate-300 border border-slate-700 font-mono">
+                            {dev.deviceType}
+                          </span>
+                        </td>
+                        <td className="py-3.5 px-5 font-medium">{formatBytes(dev.totalBytes)}</td>
+                        <td className="py-3.5 px-5 text-slate-400">{formatBytes(dev.usedBytes)}</td>
+                        <td className="py-3.5 px-5 text-emerald-400 font-medium">{formatBytes(dev.freeBytes)}</td>
+                        <td className="py-3.5 px-5 font-mono text-xs text-slate-400">{dev.mountPoint || '—'}</td>
+                        <td className="py-3.5 px-5">
+                          <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                            <CheckCircle2 className="h-3 w-3" /> REGISTERED
+                          </span>
+                        </td>
+                        <td className="py-3.5 px-5 text-right space-x-2">
+                          <button
+                            onClick={() => setInspectModalDevice(dev)}
+                            className="px-2.5 py-1 text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 rounded border border-slate-700"
+                          >
+                            Inspect
+                          </button>
+                          <button
+                            onClick={() => handleUnregisterDevice(dev.uuid)}
+                            className="px-2.5 py-1 text-xs bg-rose-600/10 hover:bg-rose-600/20 text-rose-400 border border-rose-500/30 rounded"
+                          >
+                            Unregister
+                          </button>
+                        </td>
+                      </tr>
+                      {/* Partition Accordion */}
+                      {expandedPartitions[dev.deviceName] && (
+                        <tr className="bg-slate-900/40">
+                          <td colSpan={8} className="py-3 px-8">
+                            <div className="space-y-1.5">
+                              <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Partition Table ({dev.partitions?.length || 0}):</span>
+                              {dev.partitions?.map((part) => (
+                                <div key={part.path} className="flex items-center justify-between text-xs bg-slate-950/60 p-2.5 rounded-lg border border-slate-800">
+                                  <span className="font-mono text-blue-400">{part.path} ({part.name})</span>
+                                  <span>Size: {formatBytes(part.size)}</span>
+                                  <span className="uppercase text-slate-400">{part.filesystem || 'raw'}</span>
+                                  <span className="font-mono text-slate-500">UUID: {part.uuid || 'N/A'}</span>
+                                  <span className="text-slate-400">Mount: {part.mountPoint || 'Not mounted'}</span>
+                                </div>
+                              ))}
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        {/* SECTION 2: AVAILABLE STORAGE DEVICES (CANDIDATES) */}
+        <div className="bg-[#111726] border border-slate-800 rounded-2xl overflow-hidden shadow-sm">
+          <div className="p-5 border-b border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div>
+              <h2 className="text-base font-bold text-white flex items-center gap-2">
+                <HardDrive className="h-5 w-5 text-blue-400" />
+                Available Storage Candidates ({availableDevices.length})
+              </h2>
+              <p className="text-xs text-slate-400 mt-0.5">Detected physical drives eligible for cloud registration (Files are preserved without formatting)</p>
+            </div>
+            {/* Candidate Attach Buttons */}
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-[11px] text-slate-400 hidden lg:inline">Add Candidate:</span>
+              <button
+                onClick={() => handleAttachTestDevice('SSD')}
+                disabled={loading}
+                className="px-2.5 py-1 text-xs bg-blue-600/15 hover:bg-blue-600/25 text-blue-300 border border-blue-500/30 rounded-lg font-medium flex items-center gap-1 transition"
+              >
+                <Plus className="h-3 w-3" /> USB SSD (1TB)
+              </button>
+              <button
+                onClick={() => handleAttachTestDevice('HDD')}
+                disabled={loading}
+                className="px-2.5 py-1 text-xs bg-amber-600/15 hover:bg-amber-600/25 text-amber-300 border border-amber-500/30 rounded-lg font-medium flex items-center gap-1 transition"
+              >
+                <Plus className="h-3 w-3" /> USB HDD (2TB)
+              </button>
+              <button
+                onClick={() => handleAttachTestDevice('FLASH')}
+                disabled={loading}
+                className="px-2.5 py-1 text-xs bg-purple-600/15 hover:bg-purple-600/25 text-purple-300 border border-purple-500/30 rounded-lg font-medium flex items-center gap-1 transition"
+              >
+                <Plus className="h-3 w-3" /> Flash (128GB)
+              </button>
+            </div>
+          </div>
+
+          <div className="overflow-x-auto">
+            {availableDevices.length === 0 ? (
+              <div className="p-8 text-center bg-slate-900/20">
+                <HardDrive className="h-10 w-10 text-slate-600 mx-auto mb-3" />
+                <h3 className="text-sm font-semibold text-slate-300">No Unallocated Storage Candidates Currently Connected</h3>
+                <p className="text-xs text-slate-500 max-w-md mx-auto mt-1 mb-4">
+                  Connect any external USB SSD, USB HDD, or Flash drive to the host server, or click below to attach candidate storage to select for your personal cloud:
+                </p>
+                <div className="flex flex-wrap items-center justify-center gap-2.5">
+                  <button
+                    onClick={() => handleAttachTestDevice('SSD')}
+                    disabled={loading}
+                    className="px-3.5 py-1.5 text-xs bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg font-semibold flex items-center gap-1.5 shadow-sm transition"
+                  >
+                    <Plus className="h-3.5 w-3.5" /> Attach Candidate USB SSD (1 TB)
+                  </button>
+                  <button
+                    onClick={() => handleAttachTestDevice('HDD')}
+                    disabled={loading}
+                    className="px-3.5 py-1.5 text-xs bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-lg font-medium flex items-center gap-1.5 transition"
+                  >
+                    <Plus className="h-3.5 w-3.5" /> Attach Candidate USB HDD (2 TB)
+                  </button>
+                  <button
+                    onClick={fetchDevices}
+                    disabled={loading}
+                    className="px-3.5 py-1.5 text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 rounded-lg font-medium flex items-center gap-1.5 transition"
+                  >
+                    <RefreshCw className="h-3.5 w-3.5" /> Rescan Host Disks
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <table className="w-full text-left border-collapse text-sm">
+                <thead>
+                  <tr className="bg-slate-900/60 border-b border-slate-800 text-xs font-semibold uppercase tracking-wider text-slate-400">
+                    <th className="py-3 px-5">Device</th>
+                    <th className="py-3 px-5">Type</th>
+                    <th className="py-3 px-5">Capacity</th>
+                    <th className="py-3 px-5">Filesystem</th>
+                    <th className="py-3 px-5">Existing Data</th>
+                    <th className="py-3 px-5">Partitions</th>
+                    <th className="py-3 px-5">Status</th>
+                    <th className="py-3 px-5 text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800">
+                  {availableDevices.map((dev) => (
+                    <tr key={dev.uuid} className="hover:bg-slate-800/30 transition">
                       <td className="py-3.5 px-5">
                         <div className="font-semibold text-white flex items-center gap-2">
-                          <button onClick={() => togglePartitions(dev.deviceName)} className="text-slate-400 hover:text-white">
-                            {expandedPartitions[dev.deviceName] ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
-                          </button>
                           <span>{dev.deviceModel || dev.model || 'Storage Device'}</span>
                           {dev.detectionSource === 'REAL_HARDWARE' ? (
                             <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
@@ -502,7 +850,7 @@ export default function AdminDashboard() {
                             {dev.transport || 'Unknown'}
                           </span>
                         </div>
-                        <div className="text-xs font-mono text-slate-400 pl-6 flex items-center gap-2 mt-0.5">
+                        <div className="text-xs font-mono text-slate-400 flex items-center gap-2 mt-0.5">
                           <span>{dev.devicePath} ({dev.deviceName})</span>
                           <span>•</span>
                           <span>{dev.isRotational ? 'Rotational (HDD)' : 'Solid-State (SSD/Flash)'}</span>
@@ -514,12 +862,20 @@ export default function AdminDashboard() {
                         </span>
                       </td>
                       <td className="py-3.5 px-5 font-medium">{formatBytes(dev.totalBytes)}</td>
-                      <td className="py-3.5 px-5 text-slate-400">{formatBytes(dev.usedBytes)}</td>
-                      <td className="py-3.5 px-5 text-emerald-400 font-medium">{formatBytes(dev.freeBytes)}</td>
-                      <td className="py-3.5 px-5 font-mono text-xs text-slate-400">{dev.mountPoint || '—'}</td>
+                      <td className="py-3.5 px-5 uppercase font-mono text-xs text-slate-300">{dev.filesystem || 'raw'}</td>
                       <td className="py-3.5 px-5">
-                        <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                          <CheckCircle2 className="h-3 w-3" /> REGISTERED
+                        {dev.hasExistingData ? (
+                          <span className="text-xs text-amber-300 font-medium flex items-center gap-1">
+                            <FileCheck className="h-3.5 w-3.5" /> Present
+                          </span>
+                        ) : (
+                          <span className="text-xs text-slate-500">None</span>
+                        )}
+                      </td>
+                      <td className="py-3.5 px-5 font-medium">{dev.partitions?.length || 1} partition(s)</td>
+                      <td className="py-3.5 px-5">
+                        <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-medium bg-slate-800 text-slate-300 border border-slate-700">
+                          AVAILABLE
                         </span>
                       </td>
                       <td className="py-3.5 px-5 text-right space-x-2">
@@ -530,130 +886,18 @@ export default function AdminDashboard() {
                           Inspect
                         </button>
                         <button
-                          onClick={() => handleUnregisterDevice(dev.uuid)}
-                          className="px-2.5 py-1 text-xs bg-rose-600/10 hover:bg-rose-600/20 text-rose-400 border border-rose-500/30 rounded"
+                          onClick={() => setRegisterConfirmDevice(dev)}
+                          disabled={loading}
+                          className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-semibold shadow-sm transition inline-flex items-center gap-1"
                         >
-                          Unregister
+                          <Plus className="h-3.5 w-3.5" /> Select for Cloud
                         </button>
                       </td>
                     </tr>
-                    {/* Partition Accordion */}
-                    {expandedPartitions[dev.deviceName] && (
-                      <tr className="bg-slate-900/40">
-                        <td colSpan={8} className="py-3 px-8">
-                          <div className="space-y-1.5">
-                            <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Partition Table ({dev.partitions?.length || 0}):</span>
-                            {dev.partitions?.map((part) => (
-                              <div key={part.path} className="flex items-center justify-between text-xs bg-slate-950/60 p-2.5 rounded-lg border border-slate-800">
-                                <span className="font-mono text-blue-400">{part.path} ({part.name})</span>
-                                <span>Size: {formatBytes(part.size)}</span>
-                                <span className="uppercase text-slate-400">{part.filesystem || 'raw'}</span>
-                                <span className="font-mono text-slate-500">UUID: {part.uuid || 'N/A'}</span>
-                                <span className="text-slate-400">Mount: {part.mountPoint || 'Not mounted'}</span>
-                              </div>
-                            ))}
-                          </div>
-                        </td>
-                      </tr>
-                    )}
-                  </React.Fragment>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-
-        {/* SECTION 2: AVAILABLE STORAGE DEVICES (CANDIDATES) */}
-        <div className="bg-[#111726] border border-slate-800 rounded-2xl overflow-hidden shadow-sm">
-          <div className="p-5 border-b border-slate-800 flex items-center justify-between">
-            <div>
-              <h2 className="text-base font-bold text-white flex items-center gap-2">
-                <HardDrive className="h-5 w-5 text-blue-400" />
-                Available Storage Candidates ({availableDevices.length})
-              </h2>
-              <p className="text-xs text-slate-400 mt-0.5">Detected physical drives eligible for registration (Files are preserved without formatting)</p>
-            </div>
-          </div>
-
-          <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse text-sm">
-              <thead>
-                <tr className="bg-slate-900/60 border-b border-slate-800 text-xs font-semibold uppercase tracking-wider text-slate-400">
-                  <th className="py-3 px-5">Device</th>
-                  <th className="py-3 px-5">Type</th>
-                  <th className="py-3 px-5">Capacity</th>
-                  <th className="py-3 px-5">Filesystem</th>
-                  <th className="py-3 px-5">Existing Data</th>
-                  <th className="py-3 px-5">Partitions</th>
-                  <th className="py-3 px-5">Status</th>
-                  <th className="py-3 px-5 text-right">Actions</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-800">
-                {availableDevices.map((dev) => (
-                  <tr key={dev.uuid} className="hover:bg-slate-800/30 transition">
-                    <td className="py-3.5 px-5">
-                      <div className="font-semibold text-white flex items-center gap-2">
-                        <span>{dev.deviceModel || dev.model || 'Storage Device'}</span>
-                        {dev.detectionSource === 'REAL_HARDWARE' ? (
-                          <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
-                            ● REAL HARDWARE
-                          </span>
-                        ) : (
-                          <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-500/15 text-amber-400 border border-amber-500/30">
-                            ● SIMULATION
-                          </span>
-                        )}
-                        <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-blue-500/15 text-blue-300 border border-blue-500/30">
-                          {dev.transport || 'Unknown'}
-                        </span>
-                      </div>
-                      <div className="text-xs font-mono text-slate-400 flex items-center gap-2 mt-0.5">
-                        <span>{dev.devicePath} ({dev.deviceName})</span>
-                        <span>•</span>
-                        <span>{dev.isRotational ? 'Rotational (HDD)' : 'Solid-State (SSD/Flash)'}</span>
-                      </div>
-                    </td>
-                    <td className="py-3.5 px-5">
-                      <span className="px-2 py-0.5 rounded text-xs bg-slate-800 text-slate-300 border border-slate-700 font-mono">
-                        {dev.deviceType}
-                      </span>
-                    </td>
-                    <td className="py-3.5 px-5 font-medium">{formatBytes(dev.totalBytes)}</td>
-                    <td className="py-3.5 px-5 uppercase font-mono text-xs text-slate-300">{dev.filesystem || 'raw'}</td>
-                    <td className="py-3.5 px-5">
-                      {dev.hasExistingData ? (
-                        <span className="text-xs text-amber-300 font-medium flex items-center gap-1">
-                          <FileCheck className="h-3.5 w-3.5" /> Present
-                        </span>
-                      ) : (
-                        <span className="text-xs text-slate-500">None</span>
-                      )}
-                    </td>
-                    <td className="py-3.5 px-5 font-medium">{dev.partitions?.length || 1} partition(s)</td>
-                    <td className="py-3.5 px-5">
-                      <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-medium bg-slate-800 text-slate-300 border border-slate-700">
-                        AVAILABLE
-                      </span>
-                    </td>
-                    <td className="py-3.5 px-5 text-right space-x-2">
-                      <button
-                        onClick={() => setInspectModalDevice(dev)}
-                        className="px-2.5 py-1 text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 rounded border border-slate-700"
-                      >
-                        Inspect
-                      </button>
-                      <button
-                        onClick={() => setRegisterConfirmDevice(dev)}
-                        className="px-3 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded text-xs font-semibold shadow-sm transition"
-                      >
-                        Register
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+                  ))}
+                </tbody>
+              </table>
+            )}
           </div>
         </div>
 

@@ -159,9 +159,7 @@ export class StoragePoolService {
         where: { isCloudStorage: true },
         select: { uuid: true },
       });
-      for (const d of dbDevices) {
-        this.registeredDeviceIds.add(d.uuid);
-      }
+      this.registeredDeviceIds = new Set(dbDevices.map((d) => d.uuid));
     } catch {
       // ignore
     }
@@ -471,6 +469,26 @@ export class StoragePoolService {
       registeredDeviceCount: registered.length,
       status,
     };
+  }
+
+  /**
+   * Unregisters all non-system devices from cloud storage
+   */
+  public async unregisterAllDevices(): Promise<void> {
+    try {
+      await prisma.storageDevice.updateMany({
+        where: { isSystemDisk: false },
+        data: { isCloudStorage: false, status: 'AVAILABLE', updatedAt: new Date() },
+      });
+    } catch {
+      // ignore DB offline
+    }
+    this.registeredDeviceIds.clear();
+    await this.pollDevices();
+  }
+
+  public clearRegisteredDevices(): void {
+    this.registeredDeviceIds.clear();
   }
 
   /**
