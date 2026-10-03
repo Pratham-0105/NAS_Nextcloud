@@ -52,14 +52,14 @@ export class TelemetryService {
 
   public async getTelemetry(): Promise<SystemTelemetryData> {
     try {
-      const [currentLoad, mem, time, fsList, ncReady, dbReady, redisReady] = await Promise.all([
+      const dbPort = env.DATABASE_URL.includes(':5433') ? 5433 : 5432;
+      const [currentLoad, mem, time, ncReady, dbReady, redisReady] = await Promise.all([
         si.currentLoad(),
         si.mem(),
         si.time(),
-        si.fsSize(),
         this.checkNextcloud(),
-        this.checkTcpPort('127.0.0.1', 5432),
-        this.checkTcpPort('127.0.0.1', 6379),
+        this.checkTcpPort('127.0.0.1', dbPort, 800),
+        this.checkTcpPort('127.0.0.1', 6379, 800),
       ]);
 
       const poolSummary = await this.poolService.getPoolSummary();

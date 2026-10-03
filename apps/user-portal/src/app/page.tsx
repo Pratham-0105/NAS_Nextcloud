@@ -45,10 +45,17 @@ export default function UserCloudPortal() {
 
   // Real Nextcloud Quota State
   const [quota, setQuota] = useState<{ usedStr: string; totalStr: string; percent: number }>({
-    usedStr: '39.1 MB',
-    totalStr: 'Unlimited',
+    usedStr: '39.8 MB',
+    totalStr: '123 GB',
     percent: 1,
   });
+
+  const [poolInfo, setPoolInfo] = useState<{
+    name: string;
+    isConnected: boolean;
+    memberCount: number;
+    members?: { name: string; model: string; size: number }[];
+  } | null>(null);
 
   const [files, setFiles] = useState<FileItem[]>([]);
 
@@ -92,11 +99,16 @@ export default function UserCloudPortal() {
       if (quotaRes.ok) {
         const quotaData = await quotaRes.json();
         const usedMb = ((quotaData.quota?.used || 0) / (1024 * 1024)).toFixed(1);
+        const totalGb = Math.round((quotaData.quota?.total || 0) / 1e9);
         setQuota({
           usedStr: `${usedMb} MB`,
-          totalStr: quotaData.quota?.quota === 'unlimited' ? 'Cloud Quota' : `${Math.round(quotaData.quota?.total / 1e9)} GB`,
-          percent: Math.min(100, Math.max(1, Math.round(quotaData.quota?.relative || 2))),
+          totalStr: totalGb > 0 ? `${totalGb} GB` : (quotaData.quota?.quota === 'unlimited' ? 'Cloud Quota' : `${totalGb} GB`),
+          percent: Math.min(100, Math.max(1, Math.round(quotaData.quota?.relative || 1))),
         });
+
+        if (quotaData.pool && quotaData.pool.isConnected) {
+          setPoolInfo(quotaData.pool);
+        }
       }
     } catch {
       // Fallback
@@ -276,7 +288,16 @@ export default function UserCloudPortal() {
         {/* Real User Quota Widget */}
         <div className="bg-[#161f36] border border-slate-800 p-4 rounded-2xl">
           <div className="flex items-center justify-between text-xs text-slate-400 mb-2">
-            <span className="font-semibold text-slate-200">Nextcloud Storage</span>
+            <div className="flex items-center gap-1.5">
+              <span className="font-semibold text-slate-200">
+                {poolInfo?.isConnected ? 'Cloud Storage' : 'Nextcloud Storage'}
+              </span>
+              {poolInfo?.isConnected && (
+                <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 font-medium">
+                  Connected
+                </span>
+              )}
+            </div>
             <span>{quota.percent}%</span>
           </div>
           <div className="w-full bg-slate-800 h-2 rounded-full overflow-hidden">
@@ -286,6 +307,12 @@ export default function UserCloudPortal() {
             <span>{quota.usedStr} used</span>
             <span className="text-slate-300 font-medium">{quota.totalStr}</span>
           </div>
+          {poolInfo?.members && poolInfo.members.length > 0 && (
+            <div className="mt-2.5 pt-2 border-t border-slate-800/80 text-[10px] text-slate-400 flex items-center justify-between">
+              <span className="truncate max-w-[130px] text-slate-300 font-medium">{poolInfo.members[0].model || poolInfo.members[0].name}</span>
+              <span className="text-emerald-400 font-semibold">{Math.round(poolInfo.members[0].size / 1e9)} GB</span>
+            </div>
+          )}
         </div>
       </aside>
 

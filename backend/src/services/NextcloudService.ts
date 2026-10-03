@@ -134,6 +134,40 @@ export class NextcloudService {
   }
 
   /**
+   * Sets real user quota in Nextcloud via OCS Provisioning API.
+   * Matches the physical storage pool capacity so Nextcloud enforces it.
+   */
+  public async setUserQuota(username: string, quotaBytesOrStr: number | string): Promise<boolean> {
+    const ocsUrl = `${this.internalUrl}/ocs/v1.php/cloud/users/${encodeURIComponent(username)}`;
+    const quotaVal = typeof quotaBytesOrStr === 'number' ? String(quotaBytesOrStr) : quotaBytesOrStr;
+
+    try {
+      const authHeader = 'Basic ' + Buffer.from(`${this.adminUser}:${this.adminPass}`).toString('base64');
+      const response = await fetch(ocsUrl, {
+        method: 'PUT',
+        headers: {
+          'Authorization': authHeader,
+          'OCS-APIRequest': 'true',
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: new URLSearchParams({
+          key: 'quota',
+          value: quotaVal,
+        }),
+      });
+
+      if (response.ok) {
+        logger.info(`[NEXTCLOUD] Synced user quota for "${username}" to ${quotaVal} bytes.`);
+        return true;
+      }
+      return false;
+    } catch (err: any) {
+      logger.warn(`[NEXTCLOUD] Failed to set user quota for ${username}: ${err.message}`);
+      return false;
+    }
+  }
+
+  /**
    * Creates an authenticated WebDAV client scoped to the user's directory.
    */
   public getWebdavClient(username: string, passwordPlain?: string): WebDAVClient {

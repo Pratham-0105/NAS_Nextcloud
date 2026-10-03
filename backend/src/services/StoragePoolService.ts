@@ -241,7 +241,7 @@ export class StoragePoolService {
   /**
    * Returns all discovered devices merged with registration states
    */
-  public async getDevices(): Promise<DiscoveredStorageDevice[]> {
+  public async getDevices(forceRefresh = false): Promise<DiscoveredStorageDevice[]> {
     try {
       const dbDevices = await prisma.storageDevice.findMany({
         where: { isCloudStorage: true },
@@ -252,7 +252,12 @@ export class StoragePoolService {
       // fallback to in-memory set
     }
 
-    const rawDevices = await this.detector.discoverDevices();
+    let rawDevices: DiscoveredStorageDevice[] = [];
+    if (!forceRefresh && this.knownDevices.size > 0) {
+      rawDevices = Array.from(this.knownDevices.values());
+    } else {
+      rawDevices = await this.detector.discoverDevices();
+    }
 
     return rawDevices.map((dev) => {
       const isRegistered = this.registeredDeviceIds.has(dev.uuid) && !dev.isSystemDisk;

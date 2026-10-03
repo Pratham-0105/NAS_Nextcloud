@@ -3,6 +3,7 @@ import { Router, Request, Response } from 'express';
 import multer from 'multer';
 import { NextcloudService } from '../services/NextcloudService.js';
 import { logger } from '../utils/logger.js';
+import { poolService } from './storage.routes.js';
 
 const router = Router();
 const ncService = new NextcloudService();
@@ -196,15 +197,64 @@ const deleteHandler = async (req: Request, res: Response): Promise<void> => {
 router.delete('/delete', deleteHandler);
 router.delete('/', deleteHandler);
 
-// GET /api/files/quota - Real user quota from Nextcloud OCS API
+// GET /api/files/quota - Real user quota synchronized with Active Storage Pool
 router.get('/quota', async (req: Request, res: Response): Promise<void> => {
   const username = getUsername(req);
   try {
     const quota = await ncService.getUserQuota(username);
+
+    // Retrieve active storage pool to align cloud storage with physical devices
+    let activePool: any = null;
+    try {
+      const pools = await poolService.getPools();
+      activePool = pools.find((p) => p.totalBytes > 0 && p.memberCount > 0) || pools[0];
+    } catch {
+      // fallback to raw quota if pool service unavailable
+    }
+
+    if (activePool && activePool.totalBytes > 0) {
+      // Synchronize Nextcloud user quota to match the physical storage pool
+      ncService.setUserQuota(username, activePool.totalBytes).catch(() => {});
+
+      const poolTotal = activePool.totalBytes;
+      const poolUsed = quota.used;
+      const poolFree = Math.max(0, poolTotal - poolUsed);
+      const poolRelative = poolTotal > 0 ? Math.min(100, Math.round((poolUsed / poolTotal) * 100)) : 0;
+
+      res.json({
+        success: true,
+        username,
+        quota: {
+          used: poolUsed,
+          free: poolFree,
+          total: poolTotal,
+          relative: poolRelative,
+          quota: String(poolTotal),
+        },
+        pool: {
+          id: activePool.id,
+          name: activePool.name,
+          status: activePool.status,
+          totalBytes: poolTotal,
+          usedBytes: poolUsed,
+          freeBytes: poolFree,
+          memberCount: activePool.memberCount,
+          members: (activePool.members || []).map((m: any) => ({
+            name: m.deviceName,
+            model: m.deviceModel,
+            size: m.totalBytes,
+          })),
+          isConnected: true,
+        },
+      });
+      return;
+    }
+
     res.json({
       success: true,
       username,
       quota,
+      pool: null,
     });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
