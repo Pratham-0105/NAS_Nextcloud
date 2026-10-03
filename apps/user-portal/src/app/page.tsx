@@ -85,7 +85,7 @@ export default function UserCloudPortal() {
   const fetchCloudFiles = useCallback(async (isPolling = false) => {
     if (!isPolling) setLoading(true);
     const folderPath = getFolderPath();
-    const apiUrl = process.env.NEXT_PUBLIC_USER_API_URL || process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4001/api';
+    const apiUrl = process.env.NEXT_PUBLIC_USER_API_URL || '/api';
 
     try {
       // 1. First check real-time physical drive connection and quota
@@ -187,7 +187,7 @@ export default function UserCloudPortal() {
     }, 200);
 
     try {
-      const apiUrl = process.env.NEXT_PUBLIC_USER_API_URL || process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4001/api';
+      const apiUrl = process.env.NEXT_PUBLIC_USER_API_URL || '/api';
       const formData = new FormData();
       formData.append('file', file);
       formData.append('path', getFolderPath());
@@ -218,7 +218,7 @@ export default function UserCloudPortal() {
     e.preventDefault();
     if (!newFolderName.trim()) return;
 
-    const apiUrl = process.env.NEXT_PUBLIC_USER_API_URL || process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4001/api';
+    const apiUrl = process.env.NEXT_PUBLIC_USER_API_URL || '/api';
     try {
       const res = await fetch(`${apiUrl}/files/mkdir`, {
         method: 'POST',
@@ -243,7 +243,7 @@ export default function UserCloudPortal() {
     e.stopPropagation();
     if (!confirm('Move this item to trash?')) return;
 
-    const apiUrl = process.env.NEXT_PUBLIC_USER_API_URL || process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4001/api';
+    const apiUrl = process.env.NEXT_PUBLIC_USER_API_URL || '/api';
     try {
       const res = await fetch(`${apiUrl}/files/delete`, {
         method: 'DELETE',
@@ -260,7 +260,7 @@ export default function UserCloudPortal() {
 
   const handleDownload = (filePath: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    const apiUrl = process.env.NEXT_PUBLIC_USER_API_URL || process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4001/api';
+    const apiUrl = process.env.NEXT_PUBLIC_USER_API_URL || '/api';
     window.open(`${apiUrl}/files/download?path=${encodeURIComponent(filePath)}&user=clouduser`, '_blank');
   };
 
