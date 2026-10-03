@@ -48,9 +48,38 @@ export default function UserCloudPortal() {
     { name: 'presentation_recording.mp4', type: 'video', size: '184 MB', modified: 'Sep 28, 2026' },
   ]);
 
+  useEffect(() => {
+    const fetchCloudFiles = async () => {
+      try {
+        const apiUrl = process.env.NEXT_PUBLIC_USER_API_URL || 'http://localhost:4001/api';
+        const res = await fetch(`${apiUrl}/files/list?user=admin`);
+        if (res.ok) {
+          const data = await res.json();
+          if (data.items && data.items.length > 0) {
+            const mapped: FileItem[] = data.items.map((item: any) => {
+              const isImg = item.mime?.startsWith('image/') || /\.(jpg|jpeg|png|webp|gif)$/i.test(item.basename);
+              const isVid = item.mime?.startsWith('video/') || /\.(mp4|mov|mkv)$/i.test(item.basename);
+              return {
+                name: item.basename,
+                type: item.type === 'directory' ? 'folder' : isImg ? 'image' : isVid ? 'video' : 'document',
+                size: item.size > 0 ? `${(item.size / (1024 * 1024)).toFixed(1)} MB` : 'Folder',
+                modified: new Date(item.lastmod).toLocaleDateString(),
+                url: isImg ? 'https://images.unsplash.com/photo-1507525428034-b723cf961d3e?w=800&auto=format&fit=crop&q=80' : undefined,
+              };
+            });
+            setFiles(mapped);
+          }
+        }
+      } catch (err) {
+        // Fallback to initial files if backend offline
+      }
+    };
+    fetchCloudFiles();
+  }, []);
+
   const photos = files.filter(f => f.type === 'image');
 
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
@@ -65,6 +94,16 @@ export default function UserCloudPortal() {
         return prev + 30;
       });
     }, 300);
+
+    try {
+      const apiUrl = process.env.NEXT_PUBLIC_USER_API_URL || 'http://localhost:4001/api';
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('path', currentFolder.join('/'));
+      await fetch(`${apiUrl}/files/upload`, { method: 'POST', body: formData });
+    } catch {
+      // Local state fallback
+    }
 
     const isImg = file.type.startsWith('image/');
     const newFileItem: FileItem = {

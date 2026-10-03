@@ -68,12 +68,12 @@ export default function AdminDashboard() {
 
   const fetchDevices = async () => {
     try {
-      const res = await fetch('http://localhost:4000/api/storage/devices');
+      const res = await fetch('http://localhost:4001/api/storage/devices');
       if (res.ok) {
         const data = await res.json();
         setDevices(data.devices || []);
       }
-      const poolRes = await fetch('http://localhost:4000/api/storage/status');
+      const poolRes = await fetch('http://localhost:4001/api/storage/status');
       if (poolRes.ok) {
         const poolData = await poolRes.json();
         setPool(poolData.pool || pool);
@@ -150,7 +150,7 @@ export default function AdminDashboard() {
   const handleAddToPool = async (uuid: string) => {
     setLoading(true);
     try {
-      const res = await fetch(`http://localhost:4000/api/storage/devices/${uuid}/add`, { method: 'POST' });
+      const res = await fetch(`http://localhost:4001/api/storage/devices/${uuid}/add`, { method: 'POST' });
       if (res.ok) {
         setActionMessage('Device added to Cloud Storage Pool successfully!');
         fetchDevices();
@@ -172,7 +172,7 @@ export default function AdminDashboard() {
   const handleRemoveFromPool = async (uuid: string) => {
     setLoading(true);
     try {
-      const res = await fetch(`http://localhost:4000/api/storage/devices/${uuid}/remove`, { method: 'POST' });
+      const res = await fetch(`http://localhost:4001/api/storage/devices/${uuid}/remove`, { method: 'POST' });
       if (res.ok) {
         setActionMessage('Device deactivated from Cloud Storage Pool.');
         fetchDevices();
