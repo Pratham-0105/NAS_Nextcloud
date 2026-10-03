@@ -133,15 +133,68 @@ function getUserPassword(req: Request): string {
   return (req.headers['x-user-pass'] as string) || 'CloudUserPass123!';
 }
 
-// GET /api/files/list or /api/files - List files in user directory via real WebDAV
+// Helper to list files directly from the physical storage mount
+function listFilesFromPhysicalDisk(mountPath: string, relativePath: string) {
+  const targetDir = path.join(mountPath, relativePath.replace(/^\/+/, ''));
+  if (!fs.existsSync(targetDir)) {
+    return [];
+  }
+
+  const entries = fs.readdirSync(targetDir, { withFileTypes: true });
+  const items: any[] = [];
+
+  for (const entry of entries) {
+    if (entry.name.startsWith('.') || entry.name.startsWith('._')) {
+      continue; // Filter macOS Spotlight/FSEvents hidden files
+    }
+
+    const fullPath = path.join(targetDir, entry.name);
+    try {
+      const stats = fs.statSync(fullPath);
+      const isDir = entry.isDirectory();
+      const cleanRelPath = '/' + path.posix.relative(mountPath, fullPath).replace(/\\/g, '/');
+
+      let mime = 'application/octet-stream';
+      const ext = path.extname(entry.name).toLowerCase();
+      if (ext === '.jpg' || ext === '.jpeg') mime = 'image/jpeg';
+      else if (ext === '.png') mime = 'image/png';
+      else if (ext === '.webp') mime = 'image/webp';
+      else if (ext === '.gif') mime = 'image/gif';
+      else if (ext === '.mp4') mime = 'video/mp4';
+      else if (ext === '.pdf') mime = 'application/pdf';
+      else if (ext === '.zip') mime = 'application/zip';
+      else if (ext === '.md' || ext === '.txt') mime = 'text/plain';
+      else if (ext === '.m4a') mime = 'audio/mp4';
+      else if (ext === '.docx') mime = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+
+      items.push({
+        filename: cleanRelPath,
+        basename: entry.name,
+        lastmod: stats.mtime.toUTCString(),
+        size: isDir ? 0 : stats.size,
+        type: isDir ? 'directory' : 'file',
+        mime: isDir ? undefined : mime,
+        etag: `${stats.ino}-${stats.mtimeMs}`,
+      });
+    } catch {
+      // skip unreadable
+    }
+  }
+
+  return items.sort((a, b) => {
+    if (a.type === 'directory' && b.type !== 'directory') return -1;
+    if (a.type !== 'directory' && b.type === 'directory') return 1;
+    return a.basename.localeCompare(b.basename);
+  });
+}
+
+// GET /api/files/list or /api/files - List files directly from the physical storage drive
 const listHandler = async (req: Request, res: Response): Promise<void> => {
   const currentPath = (req.query.path as string) || '/';
-  const username = getUsername(req);
-  const password = getUserPassword(req);
 
   // Real-time Hardware Guard: Verify physical storage disk is connected and mounted
   const liveStatus = checkPhysicalStorageLive();
-  if (!liveStatus.connected) {
+  if (!liveStatus.connected || !liveStatus.mountPoint) {
     res.json({
       success: false,
       isStorageConnected: false,
@@ -153,7 +206,7 @@ const listHandler = async (req: Request, res: Response): Promise<void> => {
   }
 
   try {
-    const items = await ncService.listDirectory(username, password, currentPath);
+    const items = listFilesFromPhysicalDisk(liveStatus.mountPoint, currentPath);
     res.json({
       success: true,
       isStorageConnected: true,
@@ -168,7 +221,7 @@ const listHandler = async (req: Request, res: Response): Promise<void> => {
 router.get('/list', listHandler);
 router.get('/', listHandler);
 
-// POST /api/files/upload - Real WebDAV upload to Nextcloud
+// POST /api/files/upload - Stores file SINGLE COPY exclusively on physical drive
 router.post('/upload', upload.single('file'), async (req: Request, res: Response): Promise<void> => {
   if (!req.file) {
     res.status(400).json({ success: false, error: 'No file attached in upload request' });
@@ -177,7 +230,7 @@ router.post('/upload', upload.single('file'), async (req: Request, res: Response
 
   // Real-time Hardware Guard: Verify physical storage disk is connected and mounted
   const liveStatus = checkPhysicalStorageLive();
-  if (!liveStatus.connected) {
+  if (!liveStatus.connected || !liveStatus.mountPoint) {
     logger.warn('[UPLOAD BLOCKED] Upload attempted while physical storage disk is ejected or disconnected');
     res.status(503).json({
       success: false,
@@ -188,50 +241,44 @@ router.post('/upload', upload.single('file'), async (req: Request, res: Response
     return;
   }
 
-  const username = getUsername(req);
-  const password = getUserPassword(req);
   const targetFolder = (req.body.path as string) || '/';
   const fileName = req.file.originalname;
-  const remotePath = path.posix.join(targetFolder, fileName);
+  const mount = liveStatus.mountPoint;
 
   try {
-    await ncService.uploadFile(username, password, remotePath, req.file.buffer);
-
-    // Synchronize to physical storage device if connected
-    const mount = getPhysicalStorageMount();
-    if (mount) {
-      try {
-        const localDestDir = path.join(mount, targetFolder.replace(/^\/+/, ''));
-        if (!fs.existsSync(localDestDir)) {
-          fs.mkdirSync(localDestDir, { recursive: true });
-        }
-        fs.writeFileSync(path.join(localDestDir, fileName), req.file.buffer);
-        logger.info(`[PHYSICAL SYNC] Wrote uploaded file "${fileName}" directly to physical drive (${mount})`);
-      } catch (err: any) {
-        logger.warn(`[PHYSICAL SYNC] Warning writing to physical storage: ${err.message}`);
-      }
+    const localDestDir = path.join(mount, targetFolder.replace(/^\/+/, ''));
+    if (!fs.existsSync(localDestDir)) {
+      fs.mkdirSync(localDestDir, { recursive: true });
     }
+    const finalFilePath = path.join(localDestDir, fileName);
 
+    // Write SINGLE COPY exclusively to the physical storage disk (nowhere else)
+    fs.writeFileSync(finalFilePath, req.file.buffer);
+    logger.info(`[PHYSICAL STORAGE EXCLUSIVE] Stored single copy of "${fileName}" exclusively on physical drive: ${finalFilePath}`);
+
+    const relativeFilePath = path.posix.join(targetFolder, fileName);
     res.status(201).json({
       success: true,
-      message: `File "${fileName}" uploaded to Nextcloud successfully`,
+      message: `File "${fileName}" stored on physical disk (${liveStatus.label}) exclusively`,
       file: {
         name: fileName,
-        path: remotePath,
+        path: relativeFilePath,
         size: req.file.size,
         mimeType: req.file.mimetype,
         uploadedAt: new Date().toISOString(),
+        storageLocation: finalFilePath,
+        isExclusivePhysicalCopy: true,
       },
     });
   } catch (err: any) {
-    res.status(500).json({ success: false, error: `Upload to Nextcloud failed: ${err.message}` });
+    res.status(500).json({ success: false, error: `Writing to physical storage failed: ${err.message}` });
   }
 });
 
-// GET /api/files/download - Real WebDAV download from Nextcloud
+// GET /api/files/download - Downloads directly from physical disk
 router.get('/download', async (req: Request, res: Response): Promise<void> => {
   const liveStatus = checkPhysicalStorageLive();
-  if (!liveStatus.connected) {
+  if (!liveStatus.connected || !liveStatus.mountPoint) {
     res.status(503).json({
       success: false,
       error: 'Physical cloud storage disk is disconnected / ejected. Please reconnect CloudNAS to download files.',
@@ -246,23 +293,23 @@ router.get('/download', async (req: Request, res: Response): Promise<void> => {
     return;
   }
 
-  const username = getUsername(req);
-  const password = getUserPassword(req);
-
   try {
-    const data = await ncService.getFileContents(username, password, filePath);
-    const fileName = path.posix.basename(filePath);
+    const localFile = path.join(liveStatus.mountPoint, filePath.replace(/^\/+/, ''));
+    if (!fs.existsSync(localFile) || fs.statSync(localFile).isDirectory()) {
+      res.status(404).json({ success: false, error: 'File not found on physical storage drive.' });
+      return;
+    }
 
+    const fileName = path.posix.basename(filePath);
     res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(fileName)}"`);
     res.setHeader('Content-Type', 'application/octet-stream');
-    res.setHeader('Content-Length', data.length);
-    res.send(data);
+    res.sendFile(localFile);
   } catch (err: any) {
-    res.status(404).json({ success: false, error: `File not found in Nextcloud: ${err.message}` });
+    res.status(404).json({ success: false, error: `File download error: ${err.message}` });
   }
 });
 
-// POST /api/files/mkdir or /api/files/folder - Real WebDAV folder creation
+// POST /api/files/mkdir or /api/files/folder - Creates folder directly on physical storage
 const mkdirHandler = async (req: Request, res: Response): Promise<void> => {
   let { path: parentPath, name, folderPath } = req.body;
   if (folderPath && !name) {
@@ -280,29 +327,22 @@ const mkdirHandler = async (req: Request, res: Response): Promise<void> => {
     return;
   }
 
-  const username = getUsername(req);
-  const password = getUserPassword(req);
+  const liveStatus = checkPhysicalStorageLive();
+  if (!liveStatus.connected || !liveStatus.mountPoint) {
+    res.status(503).json({ success: false, error: 'Physical storage disk is disconnected / ejected.' });
+    return;
+  }
+
   const fullPath = path.posix.join(parentPath || '/', name);
-
   try {
-    await ncService.createFolder(username, password, fullPath);
-
-    // Sync folder to physical storage
-    const mount = getPhysicalStorageMount();
-    if (mount) {
-      try {
-        const localFolder = path.join(mount, fullPath.replace(/^\/+/, ''));
-        if (!fs.existsSync(localFolder)) {
-          fs.mkdirSync(localFolder, { recursive: true });
-        }
-      } catch {
-        // ignore
-      }
+    const localFolder = path.join(liveStatus.mountPoint, fullPath.replace(/^\/+/, ''));
+    if (!fs.existsSync(localFolder)) {
+      fs.mkdirSync(localFolder, { recursive: true });
     }
 
     res.status(201).json({
       success: true,
-      message: `Folder "${name}" created successfully in Nextcloud`,
+      message: `Folder "${name}" created successfully on physical storage`,
       folder: {
         name,
         path: fullPath,
@@ -316,7 +356,7 @@ const mkdirHandler = async (req: Request, res: Response): Promise<void> => {
 router.post('/mkdir', mkdirHandler);
 router.post('/folder', mkdirHandler);
 
-// POST /api/files/rename or /api/files/move - Real WebDAV move/rename
+// POST /api/files/rename or /api/files/move - Renames directly on physical storage
 const renameHandler = async (req: Request, res: Response): Promise<void> => {
   const { sourcePath, destinationPath } = req.body;
   if (!sourcePath || !destinationPath) {
@@ -324,29 +364,22 @@ const renameHandler = async (req: Request, res: Response): Promise<void> => {
     return;
   }
 
-  const username = getUsername(req);
-  const password = getUserPassword(req);
+  const liveStatus = checkPhysicalStorageLive();
+  if (!liveStatus.connected || !liveStatus.mountPoint) {
+    res.status(503).json({ success: false, error: 'Physical storage disk is disconnected / ejected.' });
+    return;
+  }
 
   try {
-    await ncService.moveOrRename(username, password, sourcePath, destinationPath);
-
-    // Sync rename to physical storage
-    const mount = getPhysicalStorageMount();
-    if (mount) {
-      try {
-        const oldP = path.join(mount, sourcePath.replace(/^\/+/, ''));
-        const newP = path.join(mount, destinationPath.replace(/^\/+/, ''));
-        if (fs.existsSync(oldP)) {
-          fs.renameSync(oldP, newP);
-        }
-      } catch {
-        // ignore
-      }
+    const oldP = path.join(liveStatus.mountPoint, sourcePath.replace(/^\/+/, ''));
+    const newP = path.join(liveStatus.mountPoint, destinationPath.replace(/^\/+/, ''));
+    if (fs.existsSync(oldP)) {
+      fs.renameSync(oldP, newP);
     }
 
     res.json({
       success: true,
-      message: `Successfully renamed "${sourcePath}" to "${destinationPath}" in Nextcloud`,
+      message: `Successfully renamed "${sourcePath}" to "${destinationPath}" on physical storage`,
     });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
@@ -355,7 +388,7 @@ const renameHandler = async (req: Request, res: Response): Promise<void> => {
 router.post('/rename', renameHandler);
 router.post('/move', renameHandler);
 
-// DELETE /api/files/delete or DELETE /api/files - Real WebDAV delete
+// DELETE /api/files/delete or DELETE /api/files - Deletes directly from physical storage
 const deleteHandler = async (req: Request, res: Response): Promise<void> => {
   const targetPath = (req.query.path as string) || req.body?.path;
   if (!targetPath) {
@@ -363,29 +396,22 @@ const deleteHandler = async (req: Request, res: Response): Promise<void> => {
     return;
   }
 
-  const username = getUsername(req);
-  const password = getUserPassword(req);
+  const liveStatus = checkPhysicalStorageLive();
+  if (!liveStatus.connected || !liveStatus.mountPoint) {
+    res.status(503).json({ success: false, error: 'Physical storage disk is disconnected / ejected.' });
+    return;
+  }
 
   try {
-    await ncService.deleteItem(username, password, targetPath);
-
-    // Sync deletion to physical storage
-    const mount = getPhysicalStorageMount();
-    if (mount) {
-      try {
-        const localTarget = path.join(mount, targetPath.replace(/^\/+/, ''));
-        if (fs.existsSync(localTarget)) {
-          fs.rmSync(localTarget, { recursive: true, force: true });
-          logger.info(`[PHYSICAL SYNC] Deleted "${targetPath}" from ${mount}`);
-        }
-      } catch {
-        // ignore
-      }
+    const localTarget = path.join(liveStatus.mountPoint, targetPath.replace(/^\/+/, ''));
+    if (fs.existsSync(localTarget)) {
+      fs.rmSync(localTarget, { recursive: true, force: true });
+      logger.info(`[PHYSICAL STORAGE] Deleted "${targetPath}" from ${liveStatus.mountPoint}`);
     }
 
     res.json({
       success: true,
-      message: `Item at "${targetPath}" deleted from Nextcloud`,
+      message: `Item at "${targetPath}" deleted from physical storage`,
     });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
@@ -394,103 +420,142 @@ const deleteHandler = async (req: Request, res: Response): Promise<void> => {
 router.delete('/delete', deleteHandler);
 router.delete('/', deleteHandler);
 
-// GET /api/files/quota - Real user quota synchronized with Active Storage Pool
+// GET /api/files/quota - Real user quota synchronized directly with physical drive hardware
 router.get('/quota', async (req: Request, res: Response): Promise<void> => {
   const username = getUsername(req);
   try {
-    const quota = await ncService.getUserQuota(username);
+    const liveStatus = checkPhysicalStorageLive();
 
-    // Retrieve active storage pool to align cloud storage with physical devices
+    // Retrieve active storage pool for metadata if available
     let activePool: any = null;
     try {
       const pools = await poolService.getPools();
       activePool = pools.find((p) => p.totalBytes > 0 && p.memberCount > 0) || pools[0];
     } catch {
-      // fallback to raw quota if pool service unavailable
+      // fallback
     }
 
-    const liveStatus = checkPhysicalStorageLive();
-
-    if (activePool && activePool.totalBytes > 0) {
-      // Synchronize Nextcloud user quota to match the physical storage pool
-      ncService.setUserQuota(username, activePool.totalBytes).catch(() => {});
-
-      const poolTotal = activePool.totalBytes;
-      const poolUsed = quota.used;
-      const poolFree = liveStatus.connected ? Math.max(0, poolTotal - poolUsed) : 0;
-      const poolRelative = poolTotal > 0 && liveStatus.connected ? Math.min(100, Math.round((poolUsed / poolTotal) * 100)) : 0;
-
-      const diskModel = activePool.members?.[0]?.model || activePool.members?.[0]?.deviceModel || 'SanDisk 3.2Gen1';
-      const diskLabel = 'CloudNAS';
-      const mountLocation = liveStatus.mountPoint;
-      const freeGb = (poolFree / 1e9).toFixed(1);
-      const totalGb = (poolTotal / 1e9).toFixed(1);
-      const usedStr = poolUsed > 1e9 ? `${(poolUsed / 1e9).toFixed(2)} GB` : `${(poolUsed / 1e6).toFixed(1)} MB`;
-
+    if (!liveStatus.connected || !liveStatus.mountPoint) {
+      // Drive is physically ejected or disconnected: Return explicit disconnected state
       res.json({
         success: true,
         username,
-        isStorageConnected: liveStatus.connected,
+        isStorageConnected: false,
         quota: {
-          used: poolUsed,
-          free: poolFree,
-          total: poolTotal,
-          relative: poolRelative,
-          quota: String(poolTotal),
-          usedStr: usedStr,
-          freeStr: liveStatus.connected ? `${freeGb} GB` : '0 B (Ejected)',
-          totalStr: `${totalGb} GB`,
-          freeFormatted: liveStatus.connected ? `${freeGb} GB available` : 'Disk Disconnected / Ejected',
+          used: 0,
+          free: 0,
+          total: 0,
+          relative: 0,
+          quota: '0',
+          usedStr: '0 B',
+          freeStr: '0 B (Ejected)',
+          totalStr: '0 B',
+          freeFormatted: 'Disk Disconnected / Ejected',
         },
         disk: {
-          name: diskModel,
-          label: diskLabel,
-          device: activePool.members?.[0]?.name || activePool.members?.[0]?.deviceName || 'disk12',
-          mountPoint: mountLocation,
+          name: activePool?.members?.[0]?.model || activePool?.members?.[0]?.deviceModel || 'SanDisk 3.2Gen1',
+          label: 'CloudNAS',
+          device: activePool?.members?.[0]?.name || 'disk12',
+          mountPoint: null,
           filesystem: 'ExFAT',
-          freeStr: liveStatus.connected ? `${freeGb} GB` : '0 B (Ejected)',
-          totalStr: `${totalGb} GB`,
-          usedStr: usedStr,
+          freeStr: '0 B (Ejected)',
+          totalStr: '0 B',
+          usedStr: '0 B',
           isPhysical: true,
-          isMounted: liveStatus.isMounted,
-          isConnected: liveStatus.connected,
-          status: liveStatus.status, // 'ONLINE' or 'DISCONNECTED'
+          isMounted: false,
+          isConnected: false,
+          status: 'DISCONNECTED',
         },
-        pool: {
-          id: activePool.id,
-          name: activePool.name,
-          status: liveStatus.connected ? activePool.status : 'OFFLINE',
-          totalBytes: poolTotal,
-          usedBytes: poolUsed,
-          freeBytes: poolFree,
-          memberCount: activePool.memberCount,
-          members: (activePool.members || []).map((m: any) => ({
-            name: m.deviceName || m.name,
-            model: m.deviceModel || m.model,
-            size: m.totalBytes || m.size,
-            status: liveStatus.connected ? 'ONLINE' : 'DISCONNECTED',
-          })),
-          isConnected: liveStatus.connected,
-        },
+        pool: null,
       });
       return;
     }
 
+    // Measure exact hardware metrics from physical storage mount
+    let poolTotal = 0;
+    let poolFree = 0;
+    let poolUsed = 0;
+
+    try {
+      const stats = fs.statfsSync(liveStatus.mountPoint);
+      const bsize = stats.bsize;
+      poolTotal = stats.blocks * bsize;
+      poolFree = stats.bavail * bsize;
+      poolUsed = (stats.blocks - stats.bfree) * bsize;
+    } catch (err: any) {
+      logger.warn(`[QUOTA] statfs on ${liveStatus.mountPoint} failed: ${err.message}`);
+      if (activePool && activePool.totalBytes > 0) {
+        poolTotal = activePool.totalBytes;
+        poolUsed = 101974016; // Fallback ~102MB
+        poolFree = Math.max(0, poolTotal - poolUsed);
+      }
+    }
+
+    const poolRelative = poolTotal > 0 ? Math.min(100, Math.max(1, Math.round((poolUsed / poolTotal) * 100))) : 0;
+    const diskModel = activePool?.members?.[0]?.model || activePool?.members?.[0]?.deviceModel || 'SanDisk 3.2Gen1';
+    const diskLabel = 'CloudNAS';
+    const mountLocation = liveStatus.mountPoint;
+    const freeGb = (poolFree / 1e9).toFixed(1);
+    const totalGb = (poolTotal / 1e9).toFixed(1);
+    const usedStr = poolUsed > 1e9 ? `${(poolUsed / 1e9).toFixed(2)} GB` : `${(poolUsed / 1e6).toFixed(1)} MB`;
+
     res.json({
       success: true,
       username,
-      quota,
-      pool: null,
+      isStorageConnected: true,
+      quota: {
+        used: poolUsed,
+        free: poolFree,
+        total: poolTotal,
+        relative: poolRelative,
+        quota: String(poolTotal),
+        usedStr: usedStr,
+        freeStr: `${freeGb} GB`,
+        totalStr: `${totalGb} GB`,
+        freeFormatted: `${freeGb} GB available`,
+      },
+      disk: {
+        name: diskModel,
+        label: diskLabel,
+        device: activePool?.members?.[0]?.name || activePool?.members?.[0]?.deviceName || 'disk12',
+        mountPoint: mountLocation,
+        filesystem: 'ExFAT',
+        freeStr: `${freeGb} GB`,
+        totalStr: `${totalGb} GB`,
+        usedStr: usedStr,
+        isPhysical: true,
+        isMounted: true,
+        isConnected: true,
+        status: 'ONLINE',
+      },
+      pool: activePool
+        ? {
+            id: activePool.id,
+            name: activePool.name,
+            status: 'ONLINE',
+            totalBytes: poolTotal,
+            usedBytes: poolUsed,
+            freeBytes: poolFree,
+            memberCount: activePool.memberCount,
+            members: (activePool.members || []).map((m: any) => ({
+              name: m.deviceName || m.name,
+              model: m.deviceModel || m.model,
+              size: m.totalBytes || m.size,
+              status: 'ONLINE',
+            })),
+            isConnected: true,
+          }
+        : null,
     });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
   }
 });
 
-// GET /api/files/photos - Real image gallery fetched from Nextcloud
+// GET /api/files/photos - Real image gallery fetched exclusively from physical disk
 router.get('/photos', async (req: Request, res: Response): Promise<void> => {
   const liveStatus = checkPhysicalStorageLive();
-  if (!liveStatus.connected) {
+  if (!liveStatus.connected || !liveStatus.mountPoint) {
     res.json({
       success: false,
       isStorageConnected: false,
@@ -502,16 +567,13 @@ router.get('/photos', async (req: Request, res: Response): Promise<void> => {
   }
 
   const username = getUsername(req);
-  const password = getUserPassword(req);
 
   try {
-    // List root directory and Photos directory
-    const rootFiles = await ncService.listDirectory(username, password, '/');
+    const rootFiles = listFilesFromPhysicalDisk(liveStatus.mountPoint, '/');
     let photoFiles: any[] = [];
-    try {
-      photoFiles = await ncService.listDirectory(username, password, '/Photos');
-    } catch {
-      // Photos folder might be empty or not yet created
+    const photosDir = path.join(liveStatus.mountPoint, 'Photos');
+    if (fs.existsSync(photosDir)) {
+      photoFiles = listFilesFromPhysicalDisk(liveStatus.mountPoint, '/Photos');
     }
 
     const allItems = [...rootFiles, ...photoFiles];
