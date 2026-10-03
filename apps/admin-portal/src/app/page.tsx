@@ -22,7 +22,10 @@ import {
   Info,
   X,
   FileCheck,
-  Radio
+  Radio,
+  Play,
+  Square,
+  AlertCircle
 } from 'lucide-react';
 
 interface PartitionInfo {
@@ -67,6 +70,40 @@ interface StorageDevice {
   lastSeenAt: string;
 }
 
+interface StoragePoolMember {
+  id: string;
+  poolId: string;
+  deviceId: string;
+  deviceName: string;
+  deviceModel: string | null;
+  deviceType: string;
+  transport: string;
+  filesystem: string | null;
+  mountPoint: string | null;
+  totalBytes: number;
+  usedBytes: number;
+  freeBytes: number;
+  status: string;
+  hasExistingData: boolean;
+  addedAt: string;
+}
+
+interface StoragePool {
+  id: string;
+  name: string;
+  status: 'CREATING' | 'ACTIVE' | 'DEGRADED' | 'UNAVAILABLE' | 'STOPPED' | 'ERROR';
+  mountPoint: string;
+  totalBytes: number;
+  usedBytes: number;
+  freeBytes: number;
+  filesystem: string;
+  poolingMethod: string;
+  memberCount: number;
+  members: StoragePoolMember[];
+  createdAt: string;
+  updatedAt: string;
+}
+
 interface PoolSummary {
   totalBytes: number;
   usedBytes: number;
@@ -88,6 +125,7 @@ function formatBytes(bytes: number, decimals = 1): string {
 
 export default function AdminDashboard() {
   const [devices, setDevices] = useState<StorageDevice[]>([]);
+  const [pools, setPools] = useState<StoragePool[]>([]);
   const [pool, setPool] = useState<PoolSummary>({
     totalBytes: 0,
     usedBytes: 0,
@@ -103,10 +141,28 @@ export default function AdminDashboard() {
   const [actionMessage, setActionMessage] = useState<string | null>(null);
 
   // Inspection Drawer & Registration Modals
-  const [selectedDevice, setSelectedDevice] = useState<StorageDevice | null>(null);
   const [inspectModalDevice, setInspectModalDevice] = useState<StorageDevice | null>(null);
   const [registerConfirmDevice, setRegisterConfirmDevice] = useState<StorageDevice | null>(null);
   const [expandedPartitions, setExpandedPartitions] = useState<Record<string, boolean>>({});
+
+  // Pool Validation & Member Addition Modal
+  const [poolModal, setPoolModal] = useState<{
+    isOpen: boolean;
+    poolId: string;
+    poolName: string;
+    device: StorageDevice | null;
+    validation: any | null;
+    validating: boolean;
+    confirmExistingData: boolean;
+  }>({
+    isOpen: false,
+    poolId: '',
+    poolName: '',
+    device: null,
+    validation: null,
+    validating: false,
+    confirmExistingData: false,
+  });
 
   const getAdminHeaders = useCallback(() => {
     const token = typeof window !== 'undefined' ? localStorage.getItem('nas_admin_token') : null;
@@ -129,6 +185,11 @@ export default function AdminDashboard() {
       if (poolRes.ok) {
         const poolData = await poolRes.json();
         setPool(poolData.pool || pool);
+      }
+      const poolsRes = await fetch('http://localhost:4001/api/storage/pools', { headers });
+      if (poolsRes.ok) {
+        const poolsData = await poolsRes.json();
+        setPools(poolsData.pools || []);
       }
       const healthRes = await fetch('http://localhost:4001/api/system/health', { headers });
       if (healthRes.ok) {
@@ -174,7 +235,7 @@ export default function AdminDashboard() {
             setRamPercent(payload.data?.ramPercent || 34);
             if (payload.data?.pool) setPool(payload.data.pool);
             if (payload.data?.dockerStatus) setDockerStatus(payload.data.dockerStatus);
-          } else if (payload.type?.startsWith('storage.device.')) {
+          } else if (payload.type?.startsWith('storage.device.') || payload.type?.startsWith('storage.pool.')) {
             setActionMessage(`Event: ${payload.data?.message || payload.type}`);
             fetchDevices();
           }
@@ -234,8 +295,9 @@ export default function AdminDashboard() {
         headers: getAdminHeaders(),
       });
       const data = await res.json();
+
       if (res.ok) {
-        setActionMessage(data.message || 'Device unregistered successfully.');
+        setActionMessage(data.message || 'Device unregistered.');
         fetchDevices();
       } else {
         alert(data.error || 'Failed to unregister device.');
@@ -249,7 +311,7 @@ export default function AdminDashboard() {
   };
 
   const handleResetPool = async () => {
-    if (!confirm('Unregister all devices from cloud storage and reset pool to 0 bytes? (Existing files remain untouched)')) {
+    if (!confirm('RESET POOL: Unregister all non-system storage devices back to available candidates? All physical files remain untouched.')) {
       return;
     }
     setLoading(true);
@@ -260,10 +322,10 @@ export default function AdminDashboard() {
       });
       const data = await res.json();
       if (res.ok) {
-        setActionMessage(data.message || 'All devices unregistered successfully.');
+        setActionMessage(data.message || 'Storage pool successfully reset to 0 bytes.');
         fetchDevices();
       } else {
-        alert(data.error || 'Failed to reset storage pool.');
+        alert(data.error || 'Failed to reset pool');
       }
     } catch (err: any) {
       alert(`Reset error: ${err.message}`);
@@ -273,7 +335,7 @@ export default function AdminDashboard() {
     }
   };
 
-  const handleSetMode = async (mode: 'real' | 'simulation' | 'auto') => {
+  const handleSetMode = async (mode: 'auto' | 'real' | 'simulation') => {
     setLoading(true);
     try {
       const res = await fetch('http://localhost:4001/api/storage/mode', {
@@ -283,13 +345,94 @@ export default function AdminDashboard() {
       });
       const data = await res.json();
       if (res.ok) {
-        setActionMessage(data.message || `Storage detection mode switched to ${mode.toUpperCase()}`);
+        setActionMessage(`Detection mode switched to ${mode.toUpperCase()}`);
         fetchDevices();
       } else {
-        alert(data.error || 'Failed to switch mode.');
+        alert(data.error || 'Failed to switch mode');
       }
     } catch (err: any) {
       alert(`Mode switch error: ${err.message}`);
+    } finally {
+      setLoading(false);
+      setTimeout(() => setActionMessage(null), 5000);
+    }
+  };
+
+  const handleOpenPoolValidate = async (targetPoolId: string, targetPoolName: string, device: StorageDevice) => {
+    setPoolModal({
+      isOpen: true,
+      poolId: targetPoolId,
+      poolName: targetPoolName,
+      device,
+      validation: null,
+      validating: true,
+      confirmExistingData: device.hasExistingData,
+    });
+
+    try {
+      const res = await fetch(`http://localhost:4001/api/storage/pools/${targetPoolId}/members/${device.uuid}/validate`, {
+        method: 'POST',
+        headers: getAdminHeaders(),
+      });
+      const data = await res.json();
+      setPoolModal((prev) => ({
+        ...prev,
+        validation: data.validation,
+        validating: false,
+      }));
+    } catch (err: any) {
+      setPoolModal((prev) => ({ ...prev, validating: false }));
+      alert(`Validation request failed: ${err.message}`);
+    }
+  };
+
+  const handleConfirmAddToPool = async () => {
+    if (!poolModal.device || !poolModal.poolId) return;
+    setLoading(true);
+    try {
+      const res = await fetch(`http://localhost:4001/api/storage/pools/${poolModal.poolId}/members/${poolModal.device.uuid}/add`, {
+        method: 'POST',
+        headers: getAdminHeaders(),
+        body: JSON.stringify({
+          confirm: true,
+          confirmExistingData: poolModal.confirmExistingData,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setActionMessage(data.message || 'Device added to storage pool successfully!');
+        setPoolModal((prev) => ({ ...prev, isOpen: false }));
+        fetchDevices();
+      } else {
+        alert(data.error || 'Failed to add device to pool');
+      }
+    } catch (err: any) {
+      alert(`Error adding device to pool: ${err.message}`);
+    } finally {
+      setLoading(false);
+      setTimeout(() => setActionMessage(null), 5000);
+    }
+  };
+
+  const handleRemoveFromPool = async (poolId: string, deviceId: string, deviceName: string) => {
+    if (!confirm(`Remove "${deviceName}" from storage pool? All stored files on this device will remain completely intact.`)) {
+      return;
+    }
+    setLoading(true);
+    try {
+      const res = await fetch(`http://localhost:4001/api/storage/pools/${poolId}/members/${deviceId}/remove`, {
+        method: 'POST',
+        headers: getAdminHeaders(),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setActionMessage(data.message || 'Device removed from pool.');
+        fetchDevices();
+      } else {
+        alert(data.error || 'Failed to remove member from pool');
+      }
+    } catch (err: any) {
+      alert(`Removal error: ${err.message}`);
     } finally {
       setLoading(false);
       setTimeout(() => setActionMessage(null), 5000);
@@ -387,6 +530,8 @@ export default function AdminDashboard() {
   const systemDevices = devices.filter((d) => d.isSystemDisk);
 
   const hotPlugCandidate = availableDevices[0];
+  const primaryPool = pools[0] || null;
+  const isAnyPoolDegraded = pools.some((p) => p.status === 'DEGRADED');
 
   return (
     <div className="min-h-screen bg-[#090d16] text-slate-100 p-4 md:p-8">
@@ -402,10 +547,10 @@ export default function AdminDashboard() {
                 Cloud Server & Storage Manager
                 <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
                   <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
-                  ONLINE
+                  PHASE 4 ACTIVE
                 </span>
               </h1>
-              <p className="text-sm text-slate-400">Hardware Detection, Partition Inspection & Safe Device Registration</p>
+              <p className="text-sm text-slate-400">Hardware Detection, Unified Storage Pooling & Real Nextcloud Integration</p>
             </div>
           </div>
         </div>
@@ -451,51 +596,44 @@ export default function AdminDashboard() {
           >
             <Trash2 className="h-3.5 w-3.5" /> Reset Pool
           </button>
-          <a 
-            href="http://localhost:3002" 
-            target="_blank" 
+          <a
+            href="http://localhost:3002"
+            target="_blank"
             rel="noreferrer"
-            className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-xs font-semibold text-white transition shadow-sm"
+            className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-xs font-semibold text-white shadow-sm transition"
           >
-            User Portal <ExternalLink className="h-3.5 w-3.5" />
+            User Cloud Portal <ExternalLink className="h-3.5 w-3.5" />
           </a>
         </div>
       </header>
 
       {/* Main Content */}
-      <main className="max-w-7xl mx-auto py-6 space-y-6">
-        {/* Action toast */}
-        {actionMessage && (
-          <div className="bg-blue-950/60 border border-blue-500/40 text-blue-200 px-4 py-3 rounded-xl flex items-center gap-3 animate-fade-in shadow-md">
-            <CheckCircle2 className="h-5 w-5 text-blue-400 shrink-0" />
-            <span className="text-sm font-medium">{actionMessage}</span>
+      <main className="max-w-7xl mx-auto mt-6 space-y-6">
+        {/* Pool Degraded Alert Banner */}
+        {isAnyPoolDegraded && (
+          <div className="bg-rose-950/80 border-2 border-rose-500/80 rounded-2xl p-4 shadow-xl flex items-center gap-4 text-rose-200 animate-pulse">
+            <div className="p-2.5 bg-rose-500/20 rounded-xl text-rose-400 shrink-0">
+              <AlertTriangle className="h-7 w-7" />
+            </div>
+            <div className="space-y-0.5">
+              <h3 className="font-bold text-base text-rose-100 uppercase tracking-wide">Warning: Storage Pool Degraded</h3>
+              <p className="text-xs text-rose-300">
+                One or more member storage drives are disconnected or unavailable! Reconnect the missing storage drive to restore full access.
+              </p>
+            </div>
           </div>
         )}
 
-        {/* Environment Mode Banner */}
-        {devices.length > 0 && devices.some(d => d.detectionSource === 'REAL_HARDWARE') ? (
-          <div className="bg-emerald-950/40 border border-emerald-500/40 text-emerald-200 px-4 py-3 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs shadow-md">
-            <div className="flex items-center gap-2.5">
-              <span className="h-2.5 w-2.5 rounded-full bg-emerald-400 shrink-0 animate-pulse"></span>
-              <span className="font-bold text-emerald-300">Environment: Real Hardware Storage Detection Active</span>
-              <span className="text-slate-300 hidden md:inline">• Probing real physical disks from host kernel (Internal Apple/NVMe SSD & connected external USB storage).</span>
-            </div>
+        {/* Action Status Notification Toast */}
+        {actionMessage && (
+          <div className="bg-emerald-950/80 border border-emerald-500/50 rounded-xl p-3 flex items-center justify-between text-xs text-emerald-200 shadow-md">
             <div className="flex items-center gap-2">
-              <span className="px-2.5 py-1 rounded-md bg-emerald-500/20 text-emerald-300 font-mono text-[10px] font-bold uppercase tracking-wider border border-emerald-500/30">
-                ● REAL HARDWARE
-              </span>
+              <CheckCircle2 className="h-4 w-4 text-emerald-400" />
+              <span>{actionMessage}</span>
             </div>
-          </div>
-        ) : (
-          <div className="bg-amber-950/40 border border-amber-500/40 text-amber-200 px-4 py-3 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs shadow-md">
-            <div className="flex items-center gap-2.5">
-              <span className="h-2.5 w-2.5 rounded-full bg-amber-400 animate-pulse shrink-0"></span>
-              <span className="font-bold text-amber-300">Environment: Simulation Sandbox Active</span>
-              <span className="text-slate-300 hidden md:inline">• Operating in simulation sandbox mode. Use &quot;● Real Hardware&quot; button above to switch to real host physical disks.</span>
-            </div>
-            <span className="px-2.5 py-1 rounded-md bg-amber-500/20 text-amber-300 font-mono text-[10px] font-bold uppercase tracking-wider border border-amber-500/30">
-              SIMULATION
-            </span>
+            <button onClick={() => setActionMessage(null)} className="text-emerald-400 hover:text-white">
+              <X className="h-4 w-4" />
+            </button>
           </div>
         )}
 
@@ -534,11 +672,11 @@ export default function AdminDashboard() {
                   <Eye className="h-3.5 w-3.5" /> Inspect Partitions
                 </button>
                 <button
-                  onClick={() => setRegisterConfirmDevice(hotPlugCandidate)}
+                  onClick={() => primaryPool && handleOpenPoolValidate(primaryPool.id, primaryPool.name, hotPlugCandidate)}
                   disabled={loading}
                   className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-semibold flex items-center gap-1.5 shadow-sm transition"
                 >
-                  <Plus className="h-3.5 w-3.5" /> Register as Cloud Storage
+                  <Plus className="h-3.5 w-3.5" /> Validate & Add to Pool
                 </button>
               </div>
             </div>
@@ -549,19 +687,22 @@ export default function AdminDashboard() {
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
           <div className="bg-[#111726] border border-slate-800 rounded-2xl p-5 shadow-sm">
             <div className="flex items-center justify-between">
-              <span className="text-xs font-semibold uppercase tracking-wider text-slate-400">Cloud Storage Pool</span>
+              <span className="text-xs font-semibold uppercase tracking-wider text-slate-400">Unified Cloud Pool</span>
               <HardDrive className="h-5 w-5 text-blue-400" />
             </div>
             <div className="mt-4">
               <div className="text-2xl font-bold text-white">
-                {formatBytes(pool.usedBytes)} <span className="text-sm font-normal text-slate-400">/ {formatBytes(pool.totalBytes)}</span>
+                {formatBytes(primaryPool ? primaryPool.usedBytes : pool.usedBytes)} <span className="text-sm font-normal text-slate-400">/ {formatBytes(primaryPool ? primaryPool.totalBytes : pool.totalBytes)}</span>
               </div>
               <div className="w-full bg-slate-800 h-2 rounded-full mt-3 overflow-hidden">
-                <div className="bg-blue-500 h-2 rounded-full transition-all duration-500" style={{ width: `${pool.percentUsed}%` }}></div>
+                <div 
+                  className="bg-blue-500 h-2 rounded-full transition-all duration-500" 
+                  style={{ width: `${primaryPool && primaryPool.totalBytes > 0 ? Math.round((primaryPool.usedBytes / primaryPool.totalBytes) * 100) : pool.percentUsed}%` }}
+                ></div>
               </div>
               <div className="flex justify-between text-xs text-slate-400 mt-2">
-                <span>Free: {formatBytes(pool.freeBytes)}</span>
-                <span className="text-blue-400 font-medium">{pool.activeDeviceCount} Registered Drive(s)</span>
+                <span>Free: {formatBytes(primaryPool ? primaryPool.freeBytes : pool.freeBytes)}</span>
+                <span className="text-blue-400 font-medium">{primaryPool ? primaryPool.memberCount : pool.activeDeviceCount} Member Drive(s)</span>
               </div>
             </div>
           </div>
@@ -622,6 +763,138 @@ export default function AdminDashboard() {
           </div>
         </div>
 
+        {/* MANDATORY POOLING SAFETY NOTICE */}
+        <div className="bg-blue-950/30 border border-blue-500/30 rounded-2xl p-4 flex items-center gap-3 text-xs text-blue-200">
+          <Info className="h-5 w-5 text-blue-400 shrink-0" />
+          <div>
+            <strong className="text-white">Storage Pooling Architecture Notice:</strong> Storage pooling combines capacity across storage devices without formatting. It does <strong>NOT</strong> provide data redundancy or backup.
+          </div>
+        </div>
+
+        {/* ================================================================= */}
+        {/* PHASE 4: UNIFIED STORAGE POOLS DASHBOARD */}
+        {/* ================================================================= */}
+        <div className="bg-[#111726] border border-blue-900/40 rounded-2xl overflow-hidden shadow-lg">
+          <div className="p-5 border-b border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div>
+              <h2 className="text-base font-bold text-white flex items-center gap-2">
+                <Layers className="h-5 w-5 text-blue-400" />
+                Unified Storage Pools ({pools.length})
+              </h2>
+              <p className="text-xs text-slate-400 mt-0.5">Logical storage pool mount points backed by physical block devices</p>
+            </div>
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="w-full text-left border-collapse text-sm">
+              <thead>
+                <tr className="bg-slate-900/60 border-b border-slate-800 text-xs font-semibold uppercase tracking-wider text-slate-400">
+                  <th className="py-3 px-5">Pool Name</th>
+                  <th className="py-3 px-5">Status</th>
+                  <th className="py-3 px-5">Pooling Engine</th>
+                  <th className="py-3 px-5">Member Drives</th>
+                  <th className="py-3 px-5">Total Capacity</th>
+                  <th className="py-3 px-5">Used</th>
+                  <th className="py-3 px-5">Free</th>
+                  <th className="py-3 px-5 text-right">Pool Mount</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-800">
+                {pools.length === 0 ? (
+                  <tr>
+                    <td colSpan={8} className="py-6 text-center text-xs text-slate-500">
+                      No storage pools active. Initializing primary pool...
+                    </td>
+                  </tr>
+                ) : (
+                  pools.map((p) => (
+                    <React.Fragment key={p.id}>
+                      <tr className="hover:bg-slate-800/20 transition">
+                        <td className="py-3.5 px-5 font-semibold text-white flex items-center gap-2">
+                          <HardDrive className="h-4 w-4 text-blue-400" />
+                          <span>{p.name}</span>
+                        </td>
+                        <td className="py-3.5 px-5">
+                          <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-bold ${
+                            p.status === 'ACTIVE' 
+                              ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
+                              : p.status === 'DEGRADED'
+                              ? 'bg-rose-500/20 text-rose-300 border border-rose-500/40 animate-pulse'
+                              : 'bg-slate-800 text-slate-400 border border-slate-700'
+                          }`}>
+                            {p.status}
+                          </span>
+                        </td>
+                        <td className="py-3.5 px-5 font-mono text-xs text-slate-300 uppercase">
+                          {p.poolingMethod} ({p.filesystem})
+                        </td>
+                        <td className="py-3.5 px-5 font-medium text-white">{p.memberCount} Drive(s)</td>
+                        <td className="py-3.5 px-5 font-bold text-white">{formatBytes(p.totalBytes)}</td>
+                        <td className="py-3.5 px-5 text-slate-400">{formatBytes(p.usedBytes)}</td>
+                        <td className="py-3.5 px-5 font-semibold text-emerald-400">{formatBytes(p.freeBytes)}</td>
+                        <td className="py-3.5 px-5 text-right font-mono text-xs text-blue-400">{p.mountPoint}</td>
+                      </tr>
+
+                      {/* Pool Member Drives Sub-Table */}
+                      <tr className="bg-slate-900/50">
+                        <td colSpan={8} className="py-3 px-8">
+                          <div className="space-y-2">
+                            <div className="flex items-center justify-between text-xs font-semibold text-slate-400 uppercase tracking-wider">
+                              <span>Assigned Pool Member Drives ({p.members.length}):</span>
+                            </div>
+
+                            {p.members.length === 0 ? (
+                              <div className="text-xs text-slate-500 italic py-2">
+                                No drives assigned to this pool yet. Select an available storage candidate below to assign it.
+                              </div>
+                            ) : (
+                              <div className="space-y-1.5">
+                                {p.members.map((m) => (
+                                  <div key={m.id} className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 p-2.5 bg-slate-950/80 rounded-xl border border-slate-800 text-xs">
+                                    <div className="flex items-center gap-2">
+                                      <HardDrive className="h-4 w-4 text-blue-400 shrink-0" />
+                                      <span className="font-semibold text-white">{m.deviceModel || m.deviceName}</span>
+                                      <span className="font-mono text-slate-400">({m.deviceName})</span>
+                                      <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-blue-500/15 text-blue-300 border border-blue-500/20">
+                                        {m.transport}
+                                      </span>
+                                      <span className="px-1.5 py-0.5 rounded text-[10px] uppercase font-mono bg-slate-800 text-slate-300">
+                                        {m.filesystem || 'raw'}
+                                      </span>
+                                    </div>
+
+                                    <div className="flex items-center gap-4 text-slate-300 font-mono text-[11px]">
+                                      <span>Capacity: <strong className="text-white">{formatBytes(m.totalBytes)}</strong></span>
+                                      <span>Mount: <span className="text-slate-400">{m.mountPoint || '—'}</span></span>
+                                      <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                                        m.status === 'ACTIVE' 
+                                          ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' 
+                                          : 'bg-rose-500/20 text-rose-300 border border-rose-500/30'
+                                      }`}>
+                                        {m.status}
+                                      </span>
+                                      <button
+                                        onClick={() => handleRemoveFromPool(p.id, m.deviceId, m.deviceName)}
+                                        className="px-2 py-1 text-xs bg-rose-600/10 hover:bg-rose-600/20 text-rose-400 border border-rose-500/30 rounded font-semibold transition"
+                                      >
+                                        Remove
+                                      </button>
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    </React.Fragment>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
         {/* SECTION 1: ACTIVE CLOUD STORAGE */}
         <div className="bg-[#111726] border border-slate-800 rounded-2xl overflow-hidden shadow-sm">
           <div className="p-5 border-b border-slate-800 flex items-center justify-between">
@@ -630,7 +903,7 @@ export default function AdminDashboard() {
                 <CheckCircle2 className="h-5 w-5 text-emerald-400" />
                 Active Registered Cloud Storage ({activeStorage.length})
               </h2>
-              <p className="text-xs text-slate-400 mt-0.5">Disks explicitly registered to participate in the cloud storage pool</p>
+              <p className="text-xs text-slate-400 mt-0.5">Disks explicitly registered in the cloud catalog and available for pooling</p>
             </div>
             {activeStorage.length > 0 && (
               <button
@@ -652,7 +925,7 @@ export default function AdminDashboard() {
                   <th className="py-3 px-5">Used</th>
                   <th className="py-3 px-5">Free</th>
                   <th className="py-3 px-5">Mount Point</th>
-                  <th className="py-3 px-5">Status</th>
+                  <th className="py-3 px-5">Pool State</th>
                   <th className="py-3 px-5 text-right">Actions</th>
                 </tr>
               </thead>
@@ -660,88 +933,106 @@ export default function AdminDashboard() {
                 {activeStorage.length === 0 ? (
                   <tr>
                     <td colSpan={8} className="py-8 text-center text-xs text-slate-500">
-                      No storage devices currently registered. Select a candidate drive below to add it to your cloud storage pool.
+                      No storage devices currently registered. Select an available storage candidate below to add it to your unified storage pool.
                     </td>
                   </tr>
                 ) : (
-                  activeStorage.map((dev) => (
-                    <React.Fragment key={dev.uuid}>
-                      <tr className="hover:bg-slate-800/30 transition">
-                        <td className="py-3.5 px-5">
-                          <div className="font-semibold text-white flex items-center gap-2">
-                            <button onClick={() => togglePartitions(dev.deviceName)} className="text-slate-400 hover:text-white">
-                              {expandedPartitions[dev.deviceName] ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
-                            </button>
-                            <span>{dev.deviceModel || dev.model || 'Storage Device'}</span>
-                            {dev.detectionSource === 'REAL_HARDWARE' ? (
-                              <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
-                                ● REAL HARDWARE
+                  activeStorage.map((dev) => {
+                    const isMemberOfPool = primaryPool?.members.some(m => m.deviceId === dev.uuid || m.deviceName === dev.deviceName);
+
+                    return (
+                      <React.Fragment key={dev.uuid}>
+                        <tr className="hover:bg-slate-800/30 transition">
+                          <td className="py-3.5 px-5">
+                            <div className="font-semibold text-white flex items-center gap-2">
+                              <button onClick={() => togglePartitions(dev.deviceName)} className="text-slate-400 hover:text-white">
+                                {expandedPartitions[dev.deviceName] ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+                              </button>
+                              <span>{dev.deviceModel || dev.model || 'Storage Device'}</span>
+                              {dev.detectionSource === 'REAL_HARDWARE' ? (
+                                <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
+                                  ● REAL HARDWARE
+                                </span>
+                              ) : (
+                                <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-500/15 text-amber-400 border border-amber-500/30">
+                                  ● SIMULATION
+                                </span>
+                              )}
+                              <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-blue-500/15 text-blue-300 border border-blue-500/30">
+                                {dev.transport || 'Unknown'}
                               </span>
-                            ) : (
-                              <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-500/15 text-amber-400 border border-amber-500/30">
-                                ● SIMULATION
-                              </span>
-                            )}
-                            <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-blue-500/15 text-blue-300 border border-blue-500/30">
-                              {dev.transport || 'Unknown'}
-                            </span>
-                          </div>
-                          <div className="text-xs font-mono text-slate-400 pl-6 flex items-center gap-2 mt-0.5">
-                            <span>{dev.devicePath} ({dev.deviceName})</span>
-                            <span>•</span>
-                            <span>{dev.isRotational ? 'Rotational (HDD)' : 'Solid-State (SSD/Flash)'}</span>
-                          </div>
-                        </td>
-                        <td className="py-3.5 px-5">
-                          <span className="px-2 py-0.5 rounded text-xs bg-slate-800 text-slate-300 border border-slate-700 font-mono">
-                            {dev.deviceType}
-                          </span>
-                        </td>
-                        <td className="py-3.5 px-5 font-medium">{formatBytes(dev.totalBytes)}</td>
-                        <td className="py-3.5 px-5 text-slate-400">{formatBytes(dev.usedBytes)}</td>
-                        <td className="py-3.5 px-5 text-emerald-400 font-medium">{formatBytes(dev.freeBytes)}</td>
-                        <td className="py-3.5 px-5 font-mono text-xs text-slate-400">{dev.mountPoint || '—'}</td>
-                        <td className="py-3.5 px-5">
-                          <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                            <CheckCircle2 className="h-3 w-3" /> REGISTERED
-                          </span>
-                        </td>
-                        <td className="py-3.5 px-5 text-right space-x-2">
-                          <button
-                            onClick={() => setInspectModalDevice(dev)}
-                            className="px-2.5 py-1 text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 rounded border border-slate-700"
-                          >
-                            Inspect
-                          </button>
-                          <button
-                            onClick={() => handleUnregisterDevice(dev.uuid)}
-                            className="px-2.5 py-1 text-xs bg-rose-600/10 hover:bg-rose-600/20 text-rose-400 border border-rose-500/30 rounded"
-                          >
-                            Unregister
-                          </button>
-                        </td>
-                      </tr>
-                      {/* Partition Accordion */}
-                      {expandedPartitions[dev.deviceName] && (
-                        <tr className="bg-slate-900/40">
-                          <td colSpan={8} className="py-3 px-8">
-                            <div className="space-y-1.5">
-                              <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Partition Table ({dev.partitions?.length || 0}):</span>
-                              {dev.partitions?.map((part) => (
-                                <div key={part.path} className="flex items-center justify-between text-xs bg-slate-950/60 p-2.5 rounded-lg border border-slate-800">
-                                  <span className="font-mono text-blue-400">{part.path} ({part.name})</span>
-                                  <span>Size: {formatBytes(part.size)}</span>
-                                  <span className="uppercase text-slate-400">{part.filesystem || 'raw'}</span>
-                                  <span className="font-mono text-slate-500">UUID: {part.uuid || 'N/A'}</span>
-                                  <span className="text-slate-400">Mount: {part.mountPoint || 'Not mounted'}</span>
-                                </div>
-                              ))}
+                            </div>
+                            <div className="text-xs font-mono text-slate-400 pl-6 flex items-center gap-2 mt-0.5">
+                              <span>{dev.devicePath} ({dev.deviceName})</span>
+                              <span>•</span>
+                              <span>{dev.isRotational ? 'Rotational (HDD)' : 'Solid-State (SSD/Flash)'}</span>
                             </div>
                           </td>
+                          <td className="py-3.5 px-5">
+                            <span className="px-2 py-0.5 rounded text-xs bg-slate-800 text-slate-300 border border-slate-700 font-mono">
+                              {dev.deviceType}
+                            </span>
+                          </td>
+                          <td className="py-3.5 px-5 font-medium">{formatBytes(dev.totalBytes)}</td>
+                          <td className="py-3.5 px-5 text-slate-400">{formatBytes(dev.usedBytes)}</td>
+                          <td className="py-3.5 px-5 text-emerald-400 font-medium">{formatBytes(dev.freeBytes)}</td>
+                          <td className="py-3.5 px-5 font-mono text-xs text-slate-400">{dev.mountPoint || '—'}</td>
+                          <td className="py-3.5 px-5">
+                            {isMemberOfPool ? (
+                              <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-bold bg-blue-500/20 text-blue-300 border border-blue-500/30">
+                                IN POOL
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                                REGISTERED
+                              </span>
+                            )}
+                          </td>
+                          <td className="py-3.5 px-5 text-right space-x-2">
+                            {!isMemberOfPool && primaryPool && (
+                              <button
+                                onClick={() => handleOpenPoolValidate(primaryPool.id, primaryPool.name, dev)}
+                                className="px-2.5 py-1 text-xs bg-blue-600 hover:bg-blue-500 text-white rounded font-semibold transition"
+                              >
+                                + Add to Pool
+                              </button>
+                            )}
+                            <button
+                              onClick={() => setInspectModalDevice(dev)}
+                              className="px-2.5 py-1 text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 rounded border border-slate-700"
+                            >
+                              Inspect
+                            </button>
+                            <button
+                              onClick={() => handleUnregisterDevice(dev.uuid)}
+                              className="px-2.5 py-1 text-xs bg-rose-600/10 hover:bg-rose-600/20 text-rose-400 border border-rose-500/30 rounded"
+                            >
+                              Unregister
+                            </button>
+                          </td>
                         </tr>
-                      )}
-                    </React.Fragment>
-                  ))
+                        {/* Partition Accordion */}
+                        {expandedPartitions[dev.deviceName] && (
+                          <tr className="bg-slate-900/40">
+                            <td colSpan={8} className="py-3 px-8">
+                              <div className="space-y-1.5">
+                                <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Partition Table ({dev.partitions?.length || 0}):</span>
+                                {dev.partitions?.map((part) => (
+                                  <div key={part.path} className="flex items-center justify-between text-xs bg-slate-950/60 p-2.5 rounded-lg border border-slate-800">
+                                    <span className="font-mono text-blue-400">{part.path} ({part.name})</span>
+                                    <span>Size: {formatBytes(part.size)}</span>
+                                    <span className="uppercase text-slate-400">{part.filesystem || 'raw'}</span>
+                                    <span className="font-mono text-slate-500">UUID: {part.uuid || 'N/A'}</span>
+                                    <span className="text-slate-400">Mount: {part.mountPoint || 'Not mounted'}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                      </React.Fragment>
+                    );
+                  })
                 )}
               </tbody>
             </table>
@@ -756,7 +1047,7 @@ export default function AdminDashboard() {
                 <HardDrive className="h-5 w-5 text-blue-400" />
                 Available Storage Candidates ({availableDevices.length})
               </h2>
-              <p className="text-xs text-slate-400 mt-0.5">Detected physical drives eligible for cloud registration (Files are preserved without formatting)</p>
+              <p className="text-xs text-slate-400 mt-0.5">Detected physical drives eligible for cloud pooling (Files are preserved without formatting)</p>
             </div>
             {/* Candidate Attach Buttons */}
             <div className="flex flex-wrap items-center gap-2">
@@ -885,13 +1176,15 @@ export default function AdminDashboard() {
                         >
                           Inspect
                         </button>
-                        <button
-                          onClick={() => setRegisterConfirmDevice(dev)}
-                          disabled={loading}
-                          className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-semibold shadow-sm transition inline-flex items-center gap-1"
-                        >
-                          <Plus className="h-3.5 w-3.5" /> Select for Cloud
-                        </button>
+                        {primaryPool && (
+                          <button
+                            onClick={() => handleOpenPoolValidate(primaryPool.id, primaryPool.name, dev)}
+                            disabled={loading}
+                            className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-semibold shadow-sm transition inline-flex items-center gap-1"
+                          >
+                            <Plus className="h-3.5 w-3.5" /> Validate & Add to Pool
+                          </button>
+                        )}
                       </td>
                     </tr>
                   ))}
@@ -977,11 +1270,11 @@ export default function AdminDashboard() {
             <ShieldCheck className="h-5 w-5" />
           </div>
           <div className="text-xs text-slate-300 space-y-1">
-            <div className="font-semibold text-sm text-white">Phase 3 Storage Management Safety Guarantee</div>
+            <div className="font-semibold text-sm text-white">Phase 4 Storage Pooling & Data Preservation Guarantee</div>
             <p>
-              Registering a storage device only updates the catalog state in PostgreSQL. 
-              <strong className="text-amber-300"> The system will NEVER automatically format, repartition, or wipe any disk.</strong>
-              All existing data on candidate drives remains completely preserved.
+              When a device is added to the storage pool, its capacity is unified logically into the pool mount point.
+              <strong className="text-amber-300"> The system will NEVER format, wipe, or overwrite the device.</strong>
+              All existing data on member drives remains preserved intact in their original file structures.
             </p>
           </div>
         </div>
@@ -1096,6 +1389,125 @@ export default function AdminDashboard() {
                 {registerConfirmDevice.hasExistingData ? 'Register Existing Storage' : 'Register Device'}
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL 3: POOL VALIDATION & MEMBER ADDITION MODAL */}
+      {poolModal.isOpen && poolModal.device && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-[#111726] border border-blue-500/30 rounded-2xl max-w-lg w-full p-6 space-y-4 relative shadow-2xl">
+            <button 
+              onClick={() => setPoolModal((prev) => ({ ...prev, isOpen: false }))}
+              className="absolute top-4 right-4 p-1.5 rounded-lg bg-slate-800 text-slate-400 hover:text-white"
+            >
+              <X className="h-5 w-5" />
+            </button>
+
+            <h3 className="font-bold text-base text-white flex items-center gap-2">
+              <Layers className="h-5 w-5 text-blue-400" />
+              Add Device to "{poolModal.poolName}"
+            </h3>
+
+            {poolModal.validating ? (
+              <div className="py-8 text-center text-xs text-slate-400 flex flex-col items-center justify-center gap-2">
+                <RefreshCw className="h-6 w-6 text-blue-400 animate-spin" />
+                <span>Performing safe device validation & partition check...</span>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <div className="bg-slate-900 p-4 rounded-xl border border-slate-800 text-xs space-y-2">
+                  <div className="flex justify-between">
+                    <span className="text-slate-400">Target Pool:</span>
+                    <span className="font-bold text-white">{poolModal.poolName}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-slate-400">Device Node:</span>
+                    <span className="font-mono text-blue-400">{poolModal.device.devicePath} ({poolModal.device.deviceName})</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-slate-400">Model:</span>
+                    <span className="font-semibold text-white">{poolModal.device.deviceModel}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-slate-400">Capacity:</span>
+                    <span className="font-bold text-emerald-400">{formatBytes(poolModal.device.totalBytes)}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-slate-400">Filesystem:</span>
+                    <span className="font-mono uppercase text-slate-300">{poolModal.device.filesystem || 'raw'}</span>
+                  </div>
+                </div>
+
+                {/* Validation Status */}
+                {poolModal.validation && (
+                  <div className="space-y-2">
+                    {poolModal.validation.valid ? (
+                      <div className="bg-emerald-950/40 border border-emerald-500/30 text-emerald-300 p-3 rounded-xl text-xs flex items-center gap-2 font-medium">
+                        <CheckCircle2 className="h-4 w-4 text-emerald-400 shrink-0" />
+                        <span>Validation Passed: Device is eligible for cloud storage pooling.</span>
+                      </div>
+                    ) : (
+                      <div className="bg-rose-950/40 border border-rose-500/40 text-rose-300 p-3 rounded-xl text-xs space-y-1">
+                        <div className="font-bold flex items-center gap-1.5 text-rose-200">
+                          <AlertTriangle className="h-4 w-4 text-rose-400" /> Device Validation Failed
+                        </div>
+                        {poolModal.validation.errors?.map((err: string, i: number) => (
+                          <div key={i} className="pl-5 text-rose-300">{err}</div>
+                        ))}
+                      </div>
+                    )}
+
+                    {poolModal.validation.warnings?.length > 0 && (
+                      <div className="bg-amber-950/40 border border-amber-500/30 text-amber-200 p-3 rounded-xl text-xs space-y-1">
+                        <div className="font-semibold text-amber-100 flex items-center gap-1.5">
+                          <AlertCircle className="h-4 w-4 text-amber-400" /> Safety Notice:
+                        </div>
+                        {poolModal.validation.warnings?.map((w: string, i: number) => (
+                          <div key={i} className="pl-5 text-amber-200/90">{w}</div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {poolModal.device.hasExistingData && (
+                  <label className="flex items-start gap-2.5 p-3 rounded-xl bg-slate-900 border border-slate-800 text-xs cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={poolModal.confirmExistingData}
+                      onChange={(e) => setPoolModal((prev) => ({ ...prev, confirmExistingData: e.target.checked }))}
+                      className="mt-0.5 rounded border-slate-700 bg-slate-800 text-blue-600 focus:ring-0"
+                    />
+                    <span className="text-slate-300">
+                      I confirm that this device contains existing files and authorize adding it to the storage pool non-destructively without formatting.
+                    </span>
+                  </label>
+                )}
+
+                <div className="flex justify-end gap-2.5 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setPoolModal((prev) => ({ ...prev, isOpen: false }))}
+                    className="px-4 py-2 rounded-xl bg-slate-800 text-slate-300 text-xs font-semibold"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleConfirmAddToPool}
+                    disabled={loading || (poolModal.validation && !poolModal.validation.valid) || (poolModal.device.hasExistingData && !poolModal.confirmExistingData)}
+                    className={`px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 shadow ${
+                      poolModal.validation && !poolModal.validation.valid
+                        ? 'bg-slate-800 text-slate-500 cursor-not-allowed'
+                        : 'bg-blue-600 hover:bg-blue-500 text-white'
+                    }`}
+                  >
+                    <Plus className="h-3.5 w-3.5" /> Confirm & Add to Storage Pool
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}

@@ -31,8 +31,8 @@ function getUserPassword(req: Request): string {
   return (req.headers['x-user-pass'] as string) || 'CloudUserPass123!';
 }
 
-// GET /api/files/list - List files in user directory via real WebDAV
-router.get('/list', async (req: Request, res: Response): Promise<void> => {
+// GET /api/files/list or /api/files - List files in user directory via real WebDAV
+const listHandler = async (req: Request, res: Response): Promise<void> => {
   const currentPath = (req.query.path as string) || '/';
   const username = getUsername(req);
   const password = getUserPassword(req);
@@ -48,7 +48,9 @@ router.get('/list', async (req: Request, res: Response): Promise<void> => {
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
   }
-});
+};
+router.get('/list', listHandler);
+router.get('/', listHandler);
 
 // POST /api/files/upload - Real WebDAV upload to Nextcloud
 router.post('/upload', upload.single('file'), async (req: Request, res: Response): Promise<void> => {
@@ -106,9 +108,14 @@ router.get('/download', async (req: Request, res: Response): Promise<void> => {
   }
 });
 
-// POST /api/files/mkdir - Real WebDAV folder creation
-router.post('/mkdir', async (req: Request, res: Response): Promise<void> => {
-  const { path: parentPath, name } = req.body;
+// POST /api/files/mkdir or /api/files/folder - Real WebDAV folder creation
+const mkdirHandler = async (req: Request, res: Response): Promise<void> => {
+  let { path: parentPath, name, folderPath } = req.body;
+  if (folderPath && !name) {
+    parentPath = path.posix.dirname(folderPath);
+    name = path.posix.basename(folderPath);
+  }
+
   if (!name || typeof name !== 'string') {
     res.status(400).json({ success: false, error: 'Valid folder name is required' });
     return;
@@ -137,10 +144,12 @@ router.post('/mkdir', async (req: Request, res: Response): Promise<void> => {
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
   }
-});
+};
+router.post('/mkdir', mkdirHandler);
+router.post('/folder', mkdirHandler);
 
-// POST /api/files/rename - Real WebDAV move/rename
-router.post('/rename', async (req: Request, res: Response): Promise<void> => {
+// POST /api/files/rename or /api/files/move - Real WebDAV move/rename
+const renameHandler = async (req: Request, res: Response): Promise<void> => {
   const { sourcePath, destinationPath } = req.body;
   if (!sourcePath || !destinationPath) {
     res.status(400).json({ success: false, error: 'Both sourcePath and destinationPath are required' });
@@ -159,11 +168,13 @@ router.post('/rename', async (req: Request, res: Response): Promise<void> => {
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
   }
-});
+};
+router.post('/rename', renameHandler);
+router.post('/move', renameHandler);
 
-// DELETE /api/files/delete - Real WebDAV delete
-router.delete('/delete', async (req: Request, res: Response): Promise<void> => {
-  const { path: targetPath } = req.body;
+// DELETE /api/files/delete or DELETE /api/files - Real WebDAV delete
+const deleteHandler = async (req: Request, res: Response): Promise<void> => {
+  const targetPath = (req.query.path as string) || req.body?.path;
   if (!targetPath) {
     res.status(400).json({ success: false, error: 'Target path is required for deletion' });
     return;
@@ -181,7 +192,9 @@ router.delete('/delete', async (req: Request, res: Response): Promise<void> => {
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
   }
-});
+};
+router.delete('/delete', deleteHandler);
+router.delete('/', deleteHandler);
 
 // GET /api/files/quota - Real user quota from Nextcloud OCS API
 router.get('/quota', async (req: Request, res: Response): Promise<void> => {

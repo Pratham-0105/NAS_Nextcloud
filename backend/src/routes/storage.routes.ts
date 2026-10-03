@@ -4,6 +4,7 @@ import { env } from '../config/env.js';
 import { StorageDetector } from '../services/StorageDetector.js';
 import { StoragePoolService, StorageEventPayload } from '../services/StoragePoolService.js';
 import { AuthenticatedUser } from '../types/index.js';
+import { prisma } from '../db/prisma.js';
 
 const router = Router();
 const detector = new StorageDetector();
@@ -350,6 +351,29 @@ router.post('/devices/:id/simulate-unplug', async (req: Request, res: Response):
   }
 });
 
+// POST /api/storage/devices/simulate-unplug - Simulate unplugging a device with uuid in body
+router.post('/devices/simulate-unplug', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const uuid = req.body?.uuid || req.body?.id;
+    if (!uuid) {
+      res.status(400).json({ success: false, error: 'Device uuid is required' });
+      return;
+    }
+    const removed = await poolService.simulateDisconnect(uuid);
+    if (!removed) {
+      res.status(404).json({ success: false, error: `Device ${uuid} not found.` });
+      return;
+    }
+    res.json({
+      success: true,
+      message: `Device ${removed.deviceModel} (${removed.deviceName}) disconnected.`,
+      device: removed,
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // Aliases for Phase 1 / Phase 2 backward compatibility
 router.post('/devices/:id/add', async (req: Request, res: Response): Promise<void> => {
   try {
@@ -378,5 +402,209 @@ router.post('/devices/:id/remove', async (req: Request, res: Response): Promise<
   }
 });
 
+// ======================================================================
+// Phase 4: Storage Pool Management Endpoints
+// ======================================================================
+
+// GET /api/storage/pools - List all storage pools
+router.get('/pools', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const pools = await poolService.getPools();
+    res.json({
+      success: true,
+      pools,
+      count: pools.length,
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// POST /api/storage/pools - Create a new storage pool
+router.post('/pools', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { name, mountPoint, poolingMethod } = req.body || {};
+    if (!name || typeof name !== 'string') {
+      res.status(400).json({ success: false, error: 'Storage pool name is required.' });
+      return;
+    }
+    const pool = await poolService.createPool({ name, mountPoint, poolingMethod });
+
+    // Audit log
+    try {
+      await prisma.auditLog.create({
+        data: {
+          action: 'STORAGE_POOL_CREATE',
+          details: { poolId: pool.id, name: pool.name, mountPoint: pool.mountPoint },
+        },
+      });
+    } catch {
+      // ignore
+    }
+
+    res.status(201).json({
+      success: true,
+      message: `Storage pool "${pool.name}" created successfully.`,
+      pool,
+    });
+  } catch (err: any) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+// GET /api/storage/pools/:id - Get a specific storage pool
+router.get('/pools/:id', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const pool = await poolService.getPoolById(req.params.id);
+    if (!pool) {
+      res.status(404).json({ success: false, error: `Storage pool "${req.params.id}" not found.` });
+      return;
+    }
+    res.json({ success: true, pool });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// GET /api/storage/pools/:id/usage - Get detailed pool usage breakdown
+router.get('/pools/:id/usage', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const pool = await poolService.getPoolById(req.params.id);
+    if (!pool) {
+      res.status(404).json({ success: false, error: `Storage pool "${req.params.id}" not found.` });
+      return;
+    }
+    const percentUsed = pool.totalBytes > 0 ? Math.round((pool.usedBytes / pool.totalBytes) * 100) : 0;
+    res.json({
+      success: true,
+      usage: {
+        poolId: pool.id,
+        name: pool.name,
+        totalBytes: pool.totalBytes,
+        usedBytes: pool.usedBytes,
+        freeBytes: pool.freeBytes,
+        percentUsed,
+        memberCount: pool.memberCount,
+        members: pool.members.map((m) => ({
+          deviceName: m.deviceName,
+          deviceModel: m.deviceModel,
+          totalBytes: m.totalBytes,
+          usedBytes: m.usedBytes,
+          freeBytes: m.freeBytes,
+          status: m.status,
+        })),
+      },
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// GET /api/storage/pools/:id/health - Inspect health of pool and its member drives
+router.get('/pools/:id/health', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const health = await poolService.checkPoolHealth(req.params.id);
+    res.json({ success: true, health });
+  } catch (err: any) {
+    res.status(404).json({ success: false, error: err.message });
+  }
+});
+
+// POST /api/storage/pools/:id/members/:deviceId/validate - Validate device eligibility
+router.post('/pools/:id/members/:deviceId/validate', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const validation = await poolService.validatePoolMember(req.params.id, req.params.deviceId);
+    res.json({ success: true, validation });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// POST /api/storage/pools/:id/members/:deviceId/add - Add device to storage pool
+router.post('/pools/:id/members/:deviceId/add', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { confirm, confirmExistingData } = req.body || {};
+    const pool = await poolService.addDeviceToPool(req.params.id, req.params.deviceId, {
+      confirm,
+      confirmExistingData,
+    });
+
+    // Audit log
+    try {
+      await prisma.auditLog.create({
+        data: {
+          action: 'STORAGE_POOL_MEMBER_ADD',
+          details: { poolId: pool.id, deviceId: req.params.deviceId },
+        },
+      });
+    } catch {
+      // ignore
+    }
+
+    res.json({
+      success: true,
+      message: `Device added to pool "${pool.name}" successfully. Capacity updated.`,
+      pool,
+    });
+  } catch (err: any) {
+    const isProtected = err.message.includes('CRITICAL: Operating system') || err.message.includes('boot disk');
+    const isConfirmNeeded = err.message.includes('Confirmation required');
+    res.status(isProtected ? 403 : isConfirmNeeded ? 400 : 400).json({
+      success: false,
+      error: err.message,
+      requiresConfirmation: isConfirmNeeded,
+      isSystemDisk: isProtected,
+    });
+  }
+});
+
+// POST /api/storage/pools/:id/members/:deviceId/remove - Remove device from storage pool
+router.post('/pools/:id/members/:deviceId/remove', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const pool = await poolService.removeDeviceFromPool(req.params.id, req.params.deviceId);
+
+    // Audit log
+    try {
+      await prisma.auditLog.create({
+        data: {
+          action: 'STORAGE_POOL_MEMBER_REMOVE',
+          details: { poolId: pool.id, deviceId: req.params.deviceId },
+        },
+      });
+    } catch {
+      // ignore
+    }
+
+    res.json({
+      success: true,
+      message: `Device removed from pool "${pool.name}". Member unlinked safely.`,
+      pool,
+    });
+  } catch (err: any) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+// POST /api/storage/pools/:id/start - Start storage pool
+router.post('/pools/:id/start', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const pool = await poolService.startPool(req.params.id);
+    res.json({ success: true, message: `Storage pool "${pool.name}" is now ACTIVE.`, pool });
+  } catch (err: any) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+// POST /api/storage/pools/:id/stop - Stop storage pool
+router.post('/pools/:id/stop', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const pool = await poolService.stopPool(req.params.id);
+    res.json({ success: true, message: `Storage pool "${pool.name}" is now STOPPED.`, pool });
+  } catch (err: any) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
 export { poolService, detector };
 export default router;
+

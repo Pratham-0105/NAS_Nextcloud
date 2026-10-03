@@ -85,6 +85,58 @@ model StorageDevice {
   createdAt       DateTime       @default(now())
   updatedAt       DateTime       @updatedAt
   events          StorageEvent[]
+  poolMembers     StoragePoolMember[]
+}
+
+enum StoragePoolStatus {
+  CREATING
+  ACTIVE
+  DEGRADED
+  UNAVAILABLE
+  STOPPED
+  ERROR
+}
+
+model StoragePool {
+  id              String              @id @default(uuid())
+  name            String              @unique
+  status          StoragePoolStatus   @default(ACTIVE)
+  mountPoint      String              @default("/mnt/storage_pool")
+  totalBytes      BigInt              @default(0)
+  usedBytes       BigInt              @default(0)
+  freeBytes       BigInt              @default(0)
+  filesystem      String              @default("mergerfs")
+  poolingMethod   String              @default("MERGERFS") // "MERGERFS" or "VIRTUAL_POOL"
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+  members         StoragePoolMember[]
+  events          StoragePoolEvent[]
+}
+
+model StoragePoolMember {
+  id              String         @id @default(uuid())
+  poolId          String
+  pool            StoragePool    @relation(fields: [poolId], references: [id], onDelete: Cascade)
+  deviceId        String
+  device          StorageDevice  @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  mountPoint      String?
+  status          String         @default("ACTIVE") // ACTIVE, DEGRADED, DISCONNECTED, REMOVED
+  addedAt         DateTime       @default(now())
+  removedAt       DateTime?
+  lastSeenAt      DateTime       @default(now())
+
+  @@unique([poolId, deviceId])
+}
+
+model StoragePoolEvent {
+  id              String         @id @default(uuid())
+  poolId          String
+  pool            StoragePool    @relation(fields: [poolId], references: [id], onDelete: Cascade)
+  severity        EventSeverity  @default(INFO)
+  eventType       String         // e.g. "storage.pool.created", "storage.pool.member_added", "storage.pool.degraded", "storage.pool.recovered"
+  message         String
+  metadata        Json?
+  timestamp       DateTime       @default(now())
 }
 
 model StorageEvent {
@@ -119,3 +171,4 @@ model AuditLog {
   details     Json?
   createdAt   DateTime      @default(now())
 }
+

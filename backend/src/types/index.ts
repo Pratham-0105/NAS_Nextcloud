@@ -125,3 +125,40 @@ export interface AuthenticatedUser {
   role: 'ADMIN' | 'USER';
   nextcloudUser: string;
 }
+
+export type StoragePoolStatusType = 'CREATING' | 'ACTIVE' | 'DEGRADED' | 'UNAVAILABLE' | 'STOPPED' | 'ERROR';
+
+export interface StoragePoolMemberDTO {
+  id: string;
+  poolId: string;
+  deviceId: string;
+  deviceName: string;
+  deviceModel: string | null;
+  deviceType: DeviceType;
+  transport: StorageTransport;
+  filesystem: string | null;
+  mountPoint: string | null;
+  totalBytes: number;
+  usedBytes: number;
+  freeBytes: number;
+  status: string;
+  hasExistingData: boolean;
+  addedAt: string;
+}
+
+export interface StoragePoolDTO {
+  id: string;
+  name: string;
+  status: StoragePoolStatusType;
+  mountPoint: string;
+  totalBytes: number;
+  usedBytes: number;
+  freeBytes: number;
+  filesystem: string;
+  poolingMethod: string;
+  memberCount: number;
+  members: StoragePoolMemberDTO[];
+  createdAt: string;
+  updatedAt: string;
+}
+
