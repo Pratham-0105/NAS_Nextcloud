@@ -1,12 +1,11 @@
 FROM node:20-alpine
 WORKDIR /app
 
-ENV NODE_ENV=production
 ENV PORT=3000
 
-# Install dependencies
+# Install all build dependencies
 COPY package*.json ./
-RUN npm install
+RUN npm install --include=dev
 
 # Copy application source
 COPY . .
@@ -14,6 +13,7 @@ COPY . .
 # Build Next.js application
 RUN npm run build
 
+ENV NODE_ENV=production
 EXPOSE 3000
 
 # Start Next.js using dynamic PORT assigned by host/Render
