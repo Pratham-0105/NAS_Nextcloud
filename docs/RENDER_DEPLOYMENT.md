@@ -36,7 +36,7 @@ cd backend
 npm run dev
 ```
 
-Your local backend is now running at `http://localhost:4000`.
+Your local backend is now running at `http://localhost:4001`.
 
 ---
 
@@ -55,7 +55,7 @@ sudo dpkg -i cloudflared.deb
 
 Run a quick temporary tunnel without even needing a domain:
 ```bash
-cloudflared tunnel --url http://localhost:4000
+cloudflared tunnel --url http://localhost:4001
 ```
 
 Cloudflare will output a public HTTPS address like:

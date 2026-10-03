@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: personal-cloud-user-portal
+    env: node
+    plan: free
+    rootDir: apps/user-portal
+    buildCommand: npm install && npm run build
+    startCommand: npm run start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NEXT_PUBLIC_USER_API_URL
+        sync: false
+      - key: NEXT_PUBLIC_API_URL
+        sync: false

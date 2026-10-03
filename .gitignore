@@ -9,10 +9,6 @@ out/
 dist/
 build/
 
-# Environment files
-.env
-.env.local
-.env.production
 
 # Logs
 npm-debug.log*
