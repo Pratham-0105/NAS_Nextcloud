@@ -88,9 +88,50 @@ export default function UserCloudPortal() {
     const apiUrl = process.env.NEXT_PUBLIC_USER_API_URL || 'http://localhost:4001/api';
 
     try {
+      // 1. First check real-time physical drive connection and quota
+      let isConnected = true;
+      const quotaRes = await fetch(`${apiUrl}/files/quota?user=clouduser`);
+      if (quotaRes.ok) {
+        const quotaData = await quotaRes.json();
+        const usedStr = quotaData.quota?.usedStr || `${((quotaData.quota?.used || 0) / (1024 * 1024)).toFixed(1)} MB`;
+        const totalGb = Math.round((quotaData.quota?.total || 0) / 1e9);
+        const freeGb = ((quotaData.quota?.free || 0) / 1e9).toFixed(1);
+
+        isConnected = quotaData.isStorageConnected ?? (quotaData.disk?.status === 'ONLINE' && quotaData.disk?.isConnected !== false);
+
+        setQuota({
+          usedStr: usedStr,
+          totalStr: quotaData.quota?.totalStr || (totalGb > 0 ? `${totalGb} GB` : 'Cloud Quota'),
+          freeStr: quotaData.quota?.freeStr || `${freeGb} GB`,
+          percent: Math.min(100, Math.max(1, Math.round(quotaData.quota?.relative || 1))),
+        });
+
+        if (quotaData.disk) {
+          setDiskInfo({
+            ...quotaData.disk,
+            isConnected,
+          });
+        }
+
+        if (quotaData.pool) {
+          setPoolInfo(quotaData.pool);
+        }
+      }
+
+      // 2. CRITICAL SAFETY GUARD: If physical disk is ejected or disconnected, NEVER show files on dashboard!
+      if (!isConnected) {
+        setFiles([]);
+        return;
+      }
+
+      // 3. Drive is connected and online: fetch files
       const res = await fetch(`${apiUrl}/files/list?user=clouduser&path=${encodeURIComponent(folderPath)}`);
       if (res.ok) {
         const data = await res.json();
+        if (data.isStorageConnected === false) {
+          setFiles([]);
+          return;
+        }
         if (data.items) {
           const mapped: FileItem[] = data.items.map((item: any) => {
             const isImg = item.mime?.startsWith('image/') || /\.(jpg|jpeg|png|webp|gif|svg)$/i.test(item.basename);
@@ -109,34 +150,6 @@ export default function UserCloudPortal() {
             };
           });
           setFiles(mapped);
-        }
-      }
-
-      // Fetch Real Quota & Connected Physical Disk Info in real time
-      const quotaRes = await fetch(`${apiUrl}/files/quota?user=clouduser`);
-      if (quotaRes.ok) {
-        const quotaData = await quotaRes.json();
-        const usedStr = quotaData.quota?.usedStr || `${((quotaData.quota?.used || 0) / (1024 * 1024)).toFixed(1)} MB`;
-        const totalGb = Math.round((quotaData.quota?.total || 0) / 1e9);
-        const freeGb = ((quotaData.quota?.free || 0) / 1e9).toFixed(1);
-
-        setQuota({
-          usedStr: usedStr,
-          totalStr: quotaData.quota?.totalStr || (totalGb > 0 ? `${totalGb} GB` : 'Cloud Quota'),
-          freeStr: quotaData.quota?.freeStr || `${freeGb} GB`,
-          percent: Math.min(100, Math.max(1, Math.round(quotaData.quota?.relative || 1))),
-        });
-
-        if (quotaData.disk) {
-          const isConnected = quotaData.isStorageConnected ?? (quotaData.disk.status === 'ONLINE' && quotaData.disk.isConnected !== false);
-          setDiskInfo({
-            ...quotaData.disk,
-            isConnected,
-          });
-        }
-
-        if (quotaData.pool) {
-          setPoolInfo(quotaData.pool);
         }
       }
     } catch {
@@ -511,148 +524,181 @@ export default function UserCloudPortal() {
 
         {/* Content Explorer */}
         <main className="flex-1 overflow-y-auto p-4 md:p-8">
-          {/* Physical Disk Disconnected Alert Banner */}
-          {diskInfo && (diskInfo.isConnected === false || diskInfo.status === 'DISCONNECTED') && (
-            <div className="mb-6 p-4 rounded-2xl bg-rose-500/10 border border-rose-500/30 flex items-center justify-between gap-4">
-              <div className="flex items-center gap-3">
-                <div className="p-2.5 rounded-xl bg-rose-500/20 text-rose-400">
-                  <AlertCircle className="h-5 w-5" />
+          {diskInfo && (diskInfo.isConnected === false || diskInfo.status === 'DISCONNECTED') ? (
+            <div className="flex flex-col items-center justify-center py-16 px-4 text-center max-w-lg mx-auto">
+              <div className="relative mb-6">
+                <div className="w-24 h-24 rounded-3xl bg-rose-500/10 border border-rose-500/30 flex items-center justify-center text-rose-400 shadow-2xl">
+                  <HardDrive className="h-12 w-12 text-rose-400" />
                 </div>
-                <div>
-                  <h4 className="text-sm font-semibold text-rose-200">Physical Storage Disk Ejected</h4>
-                  <p className="text-xs text-rose-300/80 mt-0.5">
-                    The external storage drive &quot;{diskInfo?.name || 'CloudNAS'}&quot; is not mounted. Reconnect your drive to resume synchronization and uploads.
-                  </p>
+                <div className="absolute -bottom-1 -right-1 bg-rose-600 text-white rounded-full p-1.5 shadow-lg">
+                  <AlertCircle className="h-4 w-4" />
                 </div>
               </div>
-              <span className="text-[11px] px-3 py-1 rounded-lg bg-rose-500/20 text-rose-300 border border-rose-500/30 font-semibold whitespace-nowrap">
-                Offline Mode
+
+              <span className="px-3 py-1 rounded-full bg-rose-500/15 border border-rose-500/30 text-rose-300 text-xs font-semibold uppercase tracking-wider mb-3">
+                Storage Disk Ejected
               </span>
+
+              <h2 className="text-2xl font-bold text-white mb-2">
+                Physical Cloud Storage Disconnected
+              </h2>
+
+              <p className="text-slate-400 text-sm leading-relaxed mb-6">
+                Your cloud files and documents are stored physically on <span className="text-slate-200 font-semibold">{diskInfo?.name || 'CloudNAS'}</span>. For your privacy and storage safety, your personal data is locked and hidden while the physical drive is disconnected.
+              </p>
+
+              <div className="w-full bg-[#161f36] border border-slate-800 rounded-2xl p-4 text-xs text-left mb-6 space-y-2.5">
+                <div className="flex justify-between items-center text-slate-400">
+                  <span>Storage Volume:</span>
+                  <span className="text-slate-200 font-medium">{diskInfo?.device || 'disk12'} ({diskInfo?.label || 'CloudNAS'})</span>
+                </div>
+                <div className="flex justify-between items-center text-slate-400">
+                  <span>Drive Status:</span>
+                  <span className="text-rose-400 font-bold flex items-center gap-1.5">
+                    <span className="h-2 w-2 rounded-full bg-rose-500 animate-ping" />
+                    EJECTED / DISCONNECTED
+                  </span>
+                </div>
+                <div className="flex justify-between items-center text-slate-400">
+                  <span>Data Protection Guard:</span>
+                  <span className="text-emerald-400 font-medium">Active (Files Hidden)</span>
+                </div>
+              </div>
+
+              <button
+                onClick={() => fetchCloudFiles()}
+                className="inline-flex items-center gap-2 px-6 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold shadow-lg shadow-blue-500/25 transition"
+              >
+                <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
+                Check Connection Again
+              </button>
             </div>
-          )}
-
-          {/* Breadcrumb Path */}
-          <div className="flex items-center gap-1 text-sm text-slate-400 mb-6 font-medium">
-            <button
-              onClick={() => setCurrentFolder([''])}
-              className={`hover:text-blue-400 transition ${currentFolder.length === 1 ? 'text-white font-semibold' : ''}`}
-            >
-              My Cloud
-            </button>
-            {currentFolder.filter(Boolean).map((crumb, idx) => (
-              <React.Fragment key={crumb}>
-                <ChevronRight className="h-4 w-4 text-slate-600" />
+          ) : (
+            <>
+              {/* Breadcrumb Path */}
+              <div className="flex items-center gap-1 text-sm text-slate-400 mb-6 font-medium">
                 <button
-                  onClick={() => navigateBack(idx + 1)}
-                  className={`hover:text-blue-400 transition ${idx === currentFolder.filter(Boolean).length - 1 ? 'text-white font-semibold' : ''}`}
+                  onClick={() => setCurrentFolder([''])}
+                  className={`hover:text-blue-400 transition ${currentFolder.length === 1 ? 'text-white font-semibold' : ''}`}
                 >
-                  {crumb}
+                  My Cloud
                 </button>
-              </React.Fragment>
-            ))}
-          </div>
+                {currentFolder.filter(Boolean).map((crumb, idx) => (
+                  <React.Fragment key={crumb}>
+                    <ChevronRight className="h-4 w-4 text-slate-600" />
+                    <button
+                      onClick={() => navigateBack(idx + 1)}
+                      className={`hover:text-blue-400 transition ${idx === currentFolder.filter(Boolean).length - 1 ? 'text-white font-semibold' : ''}`}
+                    >
+                      {crumb}
+                    </button>
+                  </React.Fragment>
+                ))}
+              </div>
 
-          {/* TAB 1: ALL FILES */}
-          {activeTab === 'files' && (
-            <div>
-              {files.length === 0 && !loading && (
-                <div className="text-center py-16 text-slate-500 text-sm">
-                  <Folder className="h-12 w-12 mx-auto mb-3 opacity-30" />
-                  This folder is empty. Upload a file or create a folder.
+              {/* TAB 1: ALL FILES */}
+              {activeTab === 'files' && (
+                <div>
+                  {files.length === 0 && !loading && (
+                    <div className="text-center py-16 text-slate-500 text-sm">
+                      <Folder className="h-12 w-12 mx-auto mb-3 opacity-30" />
+                      This folder is empty. Upload a file or create a folder.
+                    </div>
+                  )}
+
+                  {viewMode === 'grid' ? (
+                    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-4">
+                      {filteredFiles.map((file) => (
+                        <div
+                          key={file.name}
+                          onClick={() => file.type === 'folder' ? navigateIntoFolder(file.name) : setPreviewFile(file)}
+                          className="bg-[#131b2e] hover:bg-[#1a253f] border border-slate-800 rounded-2xl p-4 flex flex-col justify-between cursor-pointer transition group shadow-sm relative"
+                        >
+                          <div className="aspect-square rounded-xl bg-slate-900/60 flex items-center justify-center mb-3 overflow-hidden">
+                            {file.type === 'folder' && <Folder className="h-12 w-12 text-blue-400 fill-blue-500/20" />}
+                            {file.type === 'image' && file.url && (
+                              <img src={file.url} alt={file.name} className="h-full w-full object-cover group-hover:scale-105 transition" />
+                            )}
+                            {file.type === 'document' && <FileText className="h-10 w-10 text-emerald-400" />}
+                            {file.type === 'video' && <Film className="h-10 w-10 text-purple-400" />}
+                          </div>
+                          <div>
+                            <div className="text-xs font-semibold text-slate-200 truncate group-hover:text-blue-400 transition">{file.name}</div>
+                            <div className="text-[11px] text-slate-500 mt-1 flex justify-between items-center">
+                              <span>{file.size}</span>
+                              <div className="opacity-0 group-hover:opacity-100 transition flex items-center gap-1">
+                                {file.type !== 'folder' && (
+                                  <button onClick={(e) => handleDownload(file.path, e)} title="Download">
+                                    <Download className="h-3.5 w-3.5 text-slate-300 hover:text-white" />
+                                  </button>
+                                )}
+                                <button onClick={(e) => handleDeleteFile(file.path, e)} title="Delete">
+                                  <Trash2 className="h-3.5 w-3.5 text-rose-400 hover:text-rose-300" />
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="bg-[#131b2e] border border-slate-800 rounded-2xl overflow-hidden">
+                      <div className="divide-y divide-slate-800 text-sm">
+                        {filteredFiles.map((file) => (
+                          <div
+                            key={file.name}
+                            onClick={() => file.type === 'folder' ? navigateIntoFolder(file.name) : setPreviewFile(file)}
+                            className="flex items-center justify-between p-3.5 hover:bg-slate-800/40 cursor-pointer transition"
+                          >
+                            <div className="flex items-center gap-3">
+                              {file.type === 'folder' ? <Folder className="h-5 w-5 text-blue-400" /> : <FileText className="h-5 w-5 text-slate-400" />}
+                              <span className="font-medium text-slate-200">{file.name}</span>
+                            </div>
+                            <div className="flex items-center gap-6 text-xs text-slate-400">
+                              <span>{file.size}</span>
+                              <span>{file.modified}</span>
+                              {file.type !== 'folder' && (
+                                <button onClick={(e) => handleDownload(file.path, e)} className="p-1 hover:text-slate-200">
+                                  <Download className="h-4 w-4" />
+                                </button>
+                              )}
+                              <button onClick={(e) => handleDeleteFile(file.path, e)} className="p-1 hover:text-rose-400">
+                                <Trash2 className="h-4 w-4" />
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
 
-              {viewMode === 'grid' ? (
-                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-4">
-                  {filteredFiles.map((file) => (
-                    <div
-                      key={file.name}
-                      onClick={() => file.type === 'folder' ? navigateIntoFolder(file.name) : setPreviewFile(file)}
-                      className="bg-[#131b2e] hover:bg-[#1a253f] border border-slate-800 rounded-2xl p-4 flex flex-col justify-between cursor-pointer transition group shadow-sm relative"
-                    >
-                      <div className="aspect-square rounded-xl bg-slate-900/60 flex items-center justify-center mb-3 overflow-hidden">
-                        {file.type === 'folder' && <Folder className="h-12 w-12 text-blue-400 fill-blue-500/20" />}
-                        {file.type === 'image' && file.url && (
-                          <img src={file.url} alt={file.name} className="h-full w-full object-cover group-hover:scale-105 transition" />
-                        )}
-                        {file.type === 'document' && <FileText className="h-10 w-10 text-emerald-400" />}
-                        {file.type === 'video' && <Film className="h-10 w-10 text-purple-400" />}
-                      </div>
-                      <div>
-                        <div className="text-xs font-semibold text-slate-200 truncate group-hover:text-blue-400 transition">{file.name}</div>
-                        <div className="text-[11px] text-slate-500 mt-1 flex justify-between items-center">
-                          <span>{file.size}</span>
-                          <div className="opacity-0 group-hover:opacity-100 transition flex items-center gap-1">
-                            {file.type !== 'folder' && (
-                              <button onClick={(e) => handleDownload(file.path, e)} title="Download">
-                                <Download className="h-3.5 w-3.5 text-slate-300 hover:text-white" />
-                              </button>
-                            )}
-                            <button onClick={(e) => handleDeleteFile(file.path, e)} title="Delete">
-                              <Trash2 className="h-3.5 w-3.5 text-rose-400 hover:text-rose-300" />
-                            </button>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <div className="bg-[#131b2e] border border-slate-800 rounded-2xl overflow-hidden">
-                  <div className="divide-y divide-slate-800 text-sm">
-                    {filteredFiles.map((file) => (
-                      <div
-                        key={file.name}
-                        onClick={() => file.type === 'folder' ? navigateIntoFolder(file.name) : setPreviewFile(file)}
-                        className="flex items-center justify-between p-3.5 hover:bg-slate-800/40 cursor-pointer transition"
+              {/* TAB 2: PHOTOS GALLERY */}
+              {activeTab === 'photos' && (
+                <div>
+                  <div className="flex items-center justify-between mb-4">
+                    <h2 className="text-lg font-bold text-white">Photos & Moments</h2>
+                    <span className="text-xs text-slate-400">{photos.length} Photos in Nextcloud</span>
+                  </div>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                    {photos.map((photo) => (
+                      <div 
+                        key={photo.name}
+                        onClick={() => setPreviewFile(photo)}
+                        className="aspect-square bg-slate-900 rounded-2xl overflow-hidden cursor-pointer relative group border border-slate-800"
                       >
-                        <div className="flex items-center gap-3">
-                          {file.type === 'folder' ? <Folder className="h-5 w-5 text-blue-400" /> : <FileText className="h-5 w-5 text-slate-400" />}
-                          <span className="font-medium text-slate-200">{file.name}</span>
-                        </div>
-                        <div className="flex items-center gap-6 text-xs text-slate-400">
-                          <span>{file.size}</span>
-                          <span>{file.modified}</span>
-                          {file.type !== 'folder' && (
-                            <button onClick={(e) => handleDownload(file.path, e)} className="p-1 hover:text-slate-200">
-                              <Download className="h-4 w-4" />
-                            </button>
-                          )}
-                          <button onClick={(e) => handleDeleteFile(file.path, e)} className="p-1 hover:text-rose-400">
-                            <Trash2 className="h-4 w-4" />
-                          </button>
+                        <img src={photo.url} alt={photo.name} className="h-full w-full object-cover group-hover:scale-105 transition duration-300" />
+                        <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent opacity-0 group-hover:opacity-100 transition p-3 flex flex-col justify-end">
+                          <div className="text-xs font-semibold text-white truncate">{photo.name}</div>
+                          <div className="text-[10px] text-slate-300">{photo.size}</div>
                         </div>
                       </div>
                     ))}
                   </div>
                 </div>
               )}
-            </div>
-          )}
-
-          {/* TAB 2: PHOTOS GALLERY */}
-          {activeTab === 'photos' && (
-            <div>
-              <div className="flex items-center justify-between mb-4">
-                <h2 className="text-lg font-bold text-white">Photos & Moments</h2>
-                <span className="text-xs text-slate-400">{photos.length} Photos in Nextcloud</span>
-              </div>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                {photos.map((photo) => (
-                  <div 
-                    key={photo.name}
-                    onClick={() => setPreviewFile(photo)}
-                    className="aspect-square bg-slate-900 rounded-2xl overflow-hidden cursor-pointer relative group border border-slate-800"
-                  >
-                    <img src={photo.url} alt={photo.name} className="h-full w-full object-cover group-hover:scale-105 transition duration-300" />
-                    <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent opacity-0 group-hover:opacity-100 transition p-3 flex flex-col justify-end">
-                      <div className="text-xs font-semibold text-white truncate">{photo.name}</div>
-                      <div className="text-[10px] text-slate-300">{photo.size}</div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
+            </>
           )}
         </main>
       </div>

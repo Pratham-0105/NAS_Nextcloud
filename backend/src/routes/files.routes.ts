@@ -139,10 +139,24 @@ const listHandler = async (req: Request, res: Response): Promise<void> => {
   const username = getUsername(req);
   const password = getUserPassword(req);
 
+  // Real-time Hardware Guard: Verify physical storage disk is connected and mounted
+  const liveStatus = checkPhysicalStorageLive();
+  if (!liveStatus.connected) {
+    res.json({
+      success: false,
+      isStorageConnected: false,
+      error: 'Physical cloud storage disk is disconnected / ejected. Please reconnect CloudNAS to access files.',
+      items: [],
+      count: 0,
+    });
+    return;
+  }
+
   try {
     const items = await ncService.listDirectory(username, password, currentPath);
     res.json({
       success: true,
+      isStorageConnected: true,
       currentPath,
       items,
       count: items.length,
@@ -216,6 +230,16 @@ router.post('/upload', upload.single('file'), async (req: Request, res: Response
 
 // GET /api/files/download - Real WebDAV download from Nextcloud
 router.get('/download', async (req: Request, res: Response): Promise<void> => {
+  const liveStatus = checkPhysicalStorageLive();
+  if (!liveStatus.connected) {
+    res.status(503).json({
+      success: false,
+      error: 'Physical cloud storage disk is disconnected / ejected. Please reconnect CloudNAS to download files.',
+      code: 'STORAGE_DISK_DISCONNECTED',
+    });
+    return;
+  }
+
   const filePath = req.query.path as string;
   if (!filePath) {
     res.status(400).json({ success: false, error: 'File path parameter is required' });
@@ -465,6 +489,18 @@ router.get('/quota', async (req: Request, res: Response): Promise<void> => {
 
 // GET /api/files/photos - Real image gallery fetched from Nextcloud
 router.get('/photos', async (req: Request, res: Response): Promise<void> => {
+  const liveStatus = checkPhysicalStorageLive();
+  if (!liveStatus.connected) {
+    res.json({
+      success: false,
+      isStorageConnected: false,
+      error: 'Physical cloud storage disk is disconnected / ejected. Please reconnect CloudNAS to view photos.',
+      photos: [],
+      total: 0,
+    });
+    return;
+  }
+
   const username = getUsername(req);
   const password = getUserPassword(req);
 
