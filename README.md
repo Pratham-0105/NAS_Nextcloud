@@ -90,7 +90,7 @@ cd apps/admin-portal
 npm install
 npm run dev
 
-# User Portal (Port 3000)
+# User Portal (Port 3002)
 cd apps/user-portal
 npm install
 npm run dev

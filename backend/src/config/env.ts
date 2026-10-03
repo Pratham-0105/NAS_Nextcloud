@@ -10,7 +10,7 @@ const envSchema = z.object({
   REDIS_URL: z.string().default('redis://localhost:6379'),
   JWT_SECRET: z.string().min(16).default('development_jwt_secret_must_be_over_16_chars!'),
   JWT_EXPIRES_IN: z.string().default('7d'),
-  CORS_ORIGINS: z.string().default('http://localhost:3000,http://localhost:3001'),
+  CORS_ORIGINS: z.string().default('http://localhost:3000,http://localhost:3001,http://localhost:3002'),
   NEXTCLOUD_INTERNAL_URL: z.string().default('http://localhost:8080'),
   NEXTCLOUD_ADMIN_USER: z.string().default('ncadmin'),
   NEXTCLOUD_ADMIN_PASSWORD: z.string().default('change_this_strong_nc_password'),

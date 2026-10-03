@@ -223,7 +223,7 @@ export default function AdminDashboard() {
             <RefreshCw className="h-4 w-4" /> Refresh Devices
           </button>
           <a 
-            href="http://localhost:3000" 
+            href="http://localhost:3002" 
             target="_blank" 
             rel="noreferrer"
             className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-sm font-medium text-white transition shadow-sm"
