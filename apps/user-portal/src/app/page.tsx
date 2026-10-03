@@ -18,11 +18,16 @@ import {
   Plus, 
   X, 
   CheckCircle,
-  Eye,
   FolderPlus,
   RefreshCw,
   AlertCircle,
-  AlertTriangle
+  AlertTriangle,
+  Eye,
+  EyeOff,
+  Lock,
+  User,
+  LogOut,
+  Key
 } from 'lucide-react';
 
 interface FileItem {
@@ -35,6 +40,15 @@ interface FileItem {
 }
 
 export default function UserCloudPortal() {
+  // Authentication State
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean | null>(null);
+  const [currentUser, setCurrentUser] = useState<{ id: string; name: string; email: string; role: string; nextcloudUser: string } | null>(null);
+  const [loginId, setLoginId] = useState('');
+  const [loginPassword, setLoginPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [loginError, setLoginError] = useState<string | null>(null);
+  const [isSubmittingLogin, setIsSubmittingLogin] = useState(false);
+
   const [activeTab, setActiveTab] = useState<'files' | 'photos' | 'shared' | 'trash'>('files');
   const [currentFolder, setCurrentFolder] = useState<string[]>(['']);
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
@@ -86,11 +100,12 @@ export default function UserCloudPortal() {
     if (!isPolling) setLoading(true);
     const folderPath = getFolderPath();
     const apiUrl = process.env.NEXT_PUBLIC_USER_API_URL || '/api';
+    const username = currentUser?.nextcloudUser || currentUser?.id || 'clouduser';
 
     try {
       // 1. First check real-time physical drive connection and quota
       let isConnected = true;
-      const quotaRes = await fetch(`${apiUrl}/files/quota?user=clouduser`);
+      const quotaRes = await fetch(`${apiUrl}/files/quota?user=${encodeURIComponent(username)}`);
       if (quotaRes.ok) {
         const quotaData = await quotaRes.json();
         const usedStr = quotaData.quota?.usedStr || `${((quotaData.quota?.used || 0) / (1024 * 1024)).toFixed(1)} MB`;
@@ -125,7 +140,7 @@ export default function UserCloudPortal() {
       }
 
       // 3. Drive is connected and online: fetch files
-      const res = await fetch(`${apiUrl}/files/list?user=clouduser&path=${encodeURIComponent(folderPath)}`);
+      const res = await fetch(`${apiUrl}/files/list?user=${encodeURIComponent(username)}&path=${encodeURIComponent(folderPath)}`);
       if (res.ok) {
         const data = await res.json();
         if (data.isStorageConnected === false) {
@@ -136,8 +151,8 @@ export default function UserCloudPortal() {
           const mapped: FileItem[] = data.items.map((item: any) => {
             const isImg = item.mime?.startsWith('image/') || /\.(jpg|jpeg|png|webp|gif|svg)$/i.test(item.basename);
             const isVid = item.mime?.startsWith('video/') || /\.(mp4|mov|mkv)$/i.test(item.basename);
-            const cleanPath = item.filename.startsWith('/remote.php/dav/files/clouduser')
-              ? item.filename.replace('/remote.php/dav/files/clouduser', '')
+            const cleanPath = item.filename.startsWith('/remote.php/dav/files/' + username)
+              ? item.filename.replace('/remote.php/dav/files/' + username, '')
               : item.filename;
 
             return {
@@ -146,7 +161,7 @@ export default function UserCloudPortal() {
               type: item.type === 'directory' ? 'folder' : isImg ? 'image' : isVid ? 'video' : 'document',
               size: item.size > 0 ? `${(item.size / (1024 * 1024)).toFixed(1)} MB` : 'Folder',
               modified: new Date(item.lastmod).toLocaleDateString(),
-              url: isImg ? `${apiUrl}/files/download?path=${encodeURIComponent(cleanPath)}&user=clouduser` : undefined,
+              url: isImg ? `${apiUrl}/files/download?path=${encodeURIComponent(cleanPath)}&user=${encodeURIComponent(username)}` : undefined,
             };
           });
           setFiles(mapped);
@@ -157,16 +172,81 @@ export default function UserCloudPortal() {
     } finally {
       if (!isPolling) setLoading(false);
     }
-  }, [getFolderPath]);
+  }, [getFolderPath, currentUser]);
 
+  // Load session from localStorage on initial render
   useEffect(() => {
-    fetchCloudFiles();
-    // Live hardware status polling every 3 seconds for instant hot-plug / ejection responsiveness
-    const timer = setInterval(() => {
-      fetchCloudFiles(true);
-    }, 3000);
-    return () => clearInterval(timer);
-  }, [fetchCloudFiles]);
+    const savedUser = localStorage.getItem('cloudnas_user');
+    const savedToken = localStorage.getItem('cloudnas_token');
+    if (savedUser && savedToken) {
+      try {
+        setCurrentUser(JSON.parse(savedUser));
+        setIsAuthenticated(true);
+      } catch {
+        setIsAuthenticated(false);
+      }
+    } else {
+      setIsAuthenticated(false);
+    }
+  }, []);
+
+  // Live polling when authenticated
+  useEffect(() => {
+    if (isAuthenticated) {
+      fetchCloudFiles();
+      const timer = setInterval(() => {
+        fetchCloudFiles(true);
+      }, 3000);
+      return () => clearInterval(timer);
+    }
+  }, [fetchCloudFiles, isAuthenticated]);
+
+  const handleLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!loginId.trim() || !loginPassword.trim()) {
+      setLoginError('Please enter both User ID and Password');
+      return;
+    }
+
+    setLoginError(null);
+    setIsSubmittingLogin(true);
+
+    try {
+      const apiUrl = process.env.NEXT_PUBLIC_USER_API_URL || '/api';
+      const res = await fetch(`${apiUrl}/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: loginId.trim(),
+          password: loginPassword,
+        }),
+      });
+
+      const data = await res.json();
+      if (res.ok && data.success) {
+        localStorage.setItem('cloudnas_token', data.token);
+        localStorage.setItem('cloudnas_user', JSON.stringify(data.user));
+        setCurrentUser(data.user);
+        setIsAuthenticated(true);
+        setLoginPassword('');
+        setLoginError(null);
+      } else {
+        setLoginError(data.error || 'Invalid User ID or password');
+      }
+    } catch (err: any) {
+      setLoginError(`Connection error: ${err.message || 'Failed to reach cloud backend'}`);
+    } finally {
+      setIsSubmittingLogin(false);
+    }
+  };
+
+  const handleLogout = () => {
+    localStorage.removeItem('cloudnas_token');
+    localStorage.removeItem('cloudnas_user');
+    setIsAuthenticated(false);
+    setCurrentUser(null);
+    setFiles([]);
+  };
 
   const photos = files.filter(f => f.type === 'image');
 
@@ -186,13 +266,14 @@ export default function UserCloudPortal() {
       setUploadProgress(prev => (prev === null || prev >= 90 ? 90 : prev + 25));
     }, 200);
 
+    const username = currentUser?.nextcloudUser || currentUser?.id || 'clouduser';
     try {
       const apiUrl = process.env.NEXT_PUBLIC_USER_API_URL || '/api';
       const formData = new FormData();
       formData.append('file', file);
       formData.append('path', getFolderPath());
 
-      const res = await fetch(`${apiUrl}/files/upload?user=clouduser`, {
+      const res = await fetch(`${apiUrl}/files/upload?user=${encodeURIComponent(username)}`, {
         method: 'POST',
         body: formData,
       });
@@ -218,11 +299,12 @@ export default function UserCloudPortal() {
     e.preventDefault();
     if (!newFolderName.trim()) return;
 
+    const username = currentUser?.nextcloudUser || currentUser?.id || 'clouduser';
     const apiUrl = process.env.NEXT_PUBLIC_USER_API_URL || '/api';
     try {
       const res = await fetch(`${apiUrl}/files/mkdir`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-user-id': 'clouduser' },
+        headers: { 'Content-Type': 'application/json', 'x-user-id': username },
         body: JSON.stringify({
           path: getFolderPath(),
           name: newFolderName.trim(),
@@ -243,11 +325,12 @@ export default function UserCloudPortal() {
     e.stopPropagation();
     if (!confirm('Move this item to trash?')) return;
 
+    const username = currentUser?.nextcloudUser || currentUser?.id || 'clouduser';
     const apiUrl = process.env.NEXT_PUBLIC_USER_API_URL || '/api';
     try {
       const res = await fetch(`${apiUrl}/files/delete`, {
         method: 'DELETE',
-        headers: { 'Content-Type': 'application/json', 'x-user-id': 'clouduser' },
+        headers: { 'Content-Type': 'application/json', 'x-user-id': username },
         body: JSON.stringify({ path: filePath }),
       });
       if (res.ok) {
@@ -260,8 +343,9 @@ export default function UserCloudPortal() {
 
   const handleDownload = (filePath: string, e: React.MouseEvent) => {
     e.stopPropagation();
+    const username = currentUser?.nextcloudUser || currentUser?.id || 'clouduser';
     const apiUrl = process.env.NEXT_PUBLIC_USER_API_URL || '/api';
-    window.open(`${apiUrl}/files/download?path=${encodeURIComponent(filePath)}&user=clouduser`, '_blank');
+    window.open(`${apiUrl}/files/download?path=${encodeURIComponent(filePath)}&user=${encodeURIComponent(username)}`, '_blank');
   };
 
   const navigateIntoFolder = (folderName: string) => {
@@ -275,6 +359,148 @@ export default function UserCloudPortal() {
   const filteredFiles = files.filter(f => 
     f.name.toLowerCase().includes(searchQuery.toLowerCase())
   );
+
+  // Session Check Loading State
+  if (isAuthenticated === null) {
+    return (
+      <div className="min-h-screen w-full bg-[#0a0f1d] flex flex-col items-center justify-center text-slate-400 font-sans">
+        <RefreshCw className="h-8 w-8 text-blue-500 animate-spin mb-4" />
+        <p className="text-sm font-medium text-slate-300">Checking CloudNAS Session...</p>
+      </div>
+    );
+  }
+
+  // Not Logged In - High-End Login Interface
+  if (isAuthenticated === false) {
+    return (
+      <div className="min-h-screen w-full bg-[#0a0f1d] flex items-center justify-center p-4 relative overflow-hidden font-sans">
+        {/* Ambient Gradient Glows */}
+        <div className="absolute top-1/4 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[550px] h-[550px] bg-blue-600/15 rounded-full blur-[140px] pointer-events-none" />
+        <div className="absolute bottom-10 right-10 w-[350px] h-[350px] bg-indigo-600/10 rounded-full blur-[100px] pointer-events-none" />
+
+        <div className="w-full max-w-md bg-[#11192e]/90 backdrop-blur-xl border border-slate-800 rounded-3xl p-8 shadow-2xl relative z-10">
+          {/* Header & Logo */}
+          <div className="text-center mb-8">
+            <div className="inline-flex p-3.5 bg-gradient-to-tr from-blue-600 to-indigo-600 rounded-2xl shadow-lg shadow-blue-500/25 mb-4 text-white">
+              <HardDrive className="h-7 w-7" />
+            </div>
+            <h1 className="text-2xl font-bold text-white tracking-tight">CloudNAS User Portal</h1>
+            <p className="text-slate-400 text-xs mt-1.5">Sign in to access your physical cloud storage files</p>
+          </div>
+
+          {/* Error Banner */}
+          {loginError && (
+            <div className="mb-5 p-3.5 bg-rose-950/50 border border-rose-800/60 rounded-xl text-rose-300 text-xs flex items-center gap-2.5 animate-shake">
+              <AlertCircle className="h-4 w-4 text-rose-400 shrink-0" />
+              <span>{loginError}</span>
+            </div>
+          )}
+
+          {/* Login Form */}
+          <form onSubmit={handleLogin} className="space-y-4">
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-1.5">
+                User ID / Username
+              </label>
+              <div className="relative">
+                <User className="h-4 w-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  required
+                  autoFocus
+                  placeholder="Enter User ID (e.g. clouduser)"
+                  value={loginId}
+                  onChange={(e) => setLoginId(e.target.value)}
+                  className="w-full pl-10 pr-4 py-2.5 bg-slate-900/80 border border-slate-700/80 rounded-xl text-sm text-white placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-slate-300 mb-1.5">
+                Password
+              </label>
+              <div className="relative">
+                <Lock className="h-4 w-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                <input
+                  type={showPassword ? 'text' : 'password'}
+                  required
+                  placeholder="••••••••"
+                  value={loginPassword}
+                  onChange={(e) => setLoginPassword(e.target.value)}
+                  className="w-full pl-10 pr-10 py-2.5 bg-slate-900/80 border border-slate-700/80 rounded-xl text-sm text-white placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword(!showPassword)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200 p-1"
+                >
+                  {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                </button>
+              </div>
+            </div>
+
+            {/* Quick Fill Credentials Chips */}
+            <div className="pt-1">
+              <span className="text-[11px] text-slate-400 block mb-1.5 font-medium">Quick Fill Credentials:</span>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setLoginId('clouduser');
+                    setLoginPassword('CloudUserPass123!');
+                    setLoginError(null);
+                  }}
+                  className="flex-1 py-1.5 px-2 bg-slate-800/80 hover:bg-slate-700/80 border border-slate-700/60 rounded-lg text-[11px] text-blue-300 font-medium transition text-center truncate"
+                >
+                  👤 clouduser
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setLoginId('admin');
+                    setLoginPassword('admin123');
+                    setLoginError(null);
+                  }}
+                  className="flex-1 py-1.5 px-2 bg-slate-800/80 hover:bg-slate-700/80 border border-slate-700/60 rounded-lg text-[11px] text-indigo-300 font-medium transition text-center truncate"
+                >
+                  🔑 admin
+                </button>
+              </div>
+            </div>
+
+            {/* Sign In Button */}
+            <button
+              type="submit"
+              disabled={isSubmittingLogin}
+              className="w-full mt-2 py-3 px-4 bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-500 hover:from-blue-500 hover:to-indigo-500 active:scale-[0.98] text-white font-semibold text-sm rounded-xl shadow-lg shadow-blue-600/30 transition flex items-center justify-center gap-2 disabled:opacity-50"
+            >
+              {isSubmittingLogin ? (
+                <>
+                  <RefreshCw className="h-4 w-4 animate-spin" />
+                  <span>Authenticating...</span>
+                </>
+              ) : (
+                <>
+                  <Lock className="h-4 w-4" />
+                  <span>Sign In to Cloud</span>
+                </>
+              )}
+            </button>
+          </form>
+
+          {/* Footer note */}
+          <div className="mt-6 pt-5 border-t border-slate-800 text-center">
+            <p className="text-[11px] text-slate-500 flex items-center justify-center gap-1.5">
+              <span>🔒 Single copy physical storage</span>
+              <span>•</span>
+              <span>Hardware guarded</span>
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex h-screen bg-[#0b0f19] text-slate-100 overflow-hidden">
@@ -503,8 +729,24 @@ export default function UserCloudPortal() {
               </button>
             </div>
 
-            <div className="h-8 w-8 rounded-full bg-blue-600/30 border border-blue-500/50 flex items-center justify-center font-bold text-xs text-blue-300">
-              C
+            {/* Logged in User Profile & Sign Out Button */}
+            <div className="flex items-center gap-2 pl-3 border-l border-slate-700/80">
+              <div className="h-8 w-8 rounded-full bg-gradient-to-tr from-blue-600 to-indigo-600 border border-blue-400/40 flex items-center justify-center font-bold text-xs text-white shadow-sm">
+                {(currentUser?.name || currentUser?.id || 'U')[0].toUpperCase()}
+              </div>
+              <div className="hidden lg:flex flex-col text-left">
+                <span className="text-xs font-semibold text-slate-200 leading-tight truncate max-w-[110px]" title={currentUser?.name || currentUser?.id || 'User'}>
+                  {currentUser?.name || currentUser?.id || 'User'}
+                </span>
+                <span className="text-[10px] text-blue-400 font-medium">@{currentUser?.id || 'clouduser'}</span>
+              </div>
+              <button
+                onClick={handleLogout}
+                className="p-1.5 ml-1 text-slate-400 hover:text-rose-400 hover:bg-rose-950/30 rounded-lg transition"
+                title="Sign Out"
+              >
+                <LogOut className="h-4 w-4" />
+              </button>
             </div>
           </div>
         </header>
