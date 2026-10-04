@@ -3,7 +3,7 @@ const targetApi =
   process.env.BACKEND_API_URL ||
   process.env.NEXT_PUBLIC_USER_API_URL ||
   (process.env.NODE_ENV === 'production'
-    ? 'https://groundwater-criterion-earlier-diagnostic.trycloudflare.com/api'
+    ? 'https://discs-hold-calcium-sections.trycloudflare.com/api'
     : 'http://localhost:4001/api');
 
 const nextConfig = {
