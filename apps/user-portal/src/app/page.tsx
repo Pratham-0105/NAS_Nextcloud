@@ -94,6 +94,10 @@ export default function UserCloudPortal() {
     members?: { name: string; model: string; size: number }[];
   } | null>(null);
 
+  // Storage Drives View States
+  const [selectedDisk, setSelectedDisk] = useState<any | null>(null);
+  const [disksList, setDisksList] = useState<any[]>([]);
+
   const [files, setFiles] = useState<FileItem[]>([]);
 
   const getFolderPath = useCallback(() => {
@@ -125,6 +129,12 @@ export default function UserCloudPortal() {
           freeStr: quotaData.quota?.freeStr || `${freeGb} GB`,
           percent: Math.min(100, Math.max(1, Math.round(quotaData.quota?.relative || 1))),
         });
+
+        if (quotaData.disks && Array.isArray(quotaData.disks) && quotaData.disks.length > 0) {
+          setDisksList(quotaData.disks);
+        } else if (quotaData.disk) {
+          setDisksList([quotaData.disk]);
+        }
 
         if (quotaData.disk) {
           setDiskInfo({
@@ -518,12 +528,29 @@ export default function UserCloudPortal() {
           {/* Navigation Links */}
           <nav className="space-y-1">
             <button
-              onClick={() => setActiveTab('files')}
+              onClick={() => {
+                setSelectedDisk(null);
+                setCurrentFolder(['']);
+                setActiveTab('files');
+              }}
               className={`flex items-center gap-3 w-full px-3 py-2.5 rounded-xl text-sm font-medium transition ${
-                activeTab === 'files' ? 'bg-blue-600/10 text-blue-400 font-semibold' : 'text-slate-400 hover:bg-slate-800/50 hover:text-slate-200'
+                selectedDisk === null && activeTab === 'files' ? 'bg-blue-600/10 text-blue-400 font-semibold' : 'text-slate-400 hover:bg-slate-800/50 hover:text-slate-200'
               }`}
             >
-              <Folder className="h-4 w-4" /> My Files
+              <HardDrive className="h-4 w-4" /> Storage Drives
+            </button>
+            <button
+              onClick={() => {
+                if (!selectedDisk && disksList.length > 0) {
+                  setSelectedDisk(disksList[0]);
+                }
+                setActiveTab('files');
+              }}
+              className={`flex items-center gap-3 w-full px-3 py-2.5 rounded-xl text-sm font-medium transition ${
+                selectedDisk !== null && activeTab === 'files' ? 'bg-blue-600/10 text-blue-400 font-semibold' : 'text-slate-400 hover:bg-slate-800/50 hover:text-slate-200'
+              }`}
+            >
+              <Folder className="h-4 w-4" /> My Files {selectedDisk ? `(${selectedDisk.label || selectedDisk.name})` : ''}
             </button>
             <button
               onClick={() => setActiveTab('photos')}
@@ -835,68 +862,219 @@ export default function UserCloudPortal() {
               <div className="flex items-center justify-between gap-2 mb-4 sm:mb-6">
                 <div className="flex items-center gap-1 text-xs sm:text-sm text-slate-400 font-medium flex-wrap">
                   <button
-                    onClick={() => setCurrentFolder([''])}
-                    className={`hover:text-blue-400 transition ${currentFolder.length === 1 ? 'text-white font-semibold' : ''}`}
+                    onClick={() => {
+                      setSelectedDisk(null);
+                      setCurrentFolder(['']);
+                    }}
+                    className={`hover:text-blue-400 transition flex items-center gap-1.5 ${selectedDisk === null ? 'text-white font-semibold' : ''}`}
                   >
-                    My Cloud
+                    <HardDrive className="h-3.5 w-3.5 sm:h-4 sm:w-4 text-blue-400" />
+                    <span>Storage Drives</span>
                   </button>
-                  {currentFolder.filter(Boolean).map((crumb, idx) => (
-                    <React.Fragment key={crumb}>
+                  {selectedDisk && (
+                    <>
                       <ChevronRight className="h-3.5 w-3.5 sm:h-4 sm:w-4 text-slate-600" />
                       <button
-                        onClick={() => navigateBack(idx + 1)}
-                        className={`hover:text-blue-400 transition truncate max-w-[120px] ${idx === currentFolder.filter(Boolean).length - 1 ? 'text-white font-semibold' : ''}`}
+                        onClick={() => setCurrentFolder([''])}
+                        className={`hover:text-blue-400 transition truncate max-w-[150px] ${currentFolder.length === 1 ? 'text-white font-semibold' : ''}`}
                       >
-                        {crumb}
+                        {selectedDisk.name || 'CloudNAS'} ({selectedDisk.label || 'USB'})
                       </button>
-                    </React.Fragment>
-                  ))}
+                      {currentFolder.filter(Boolean).map((crumb, idx) => (
+                        <React.Fragment key={crumb}>
+                          <ChevronRight className="h-3.5 w-3.5 sm:h-4 sm:w-4 text-slate-600" />
+                          <button
+                            onClick={() => navigateBack(idx + 1)}
+                            className={`hover:text-blue-400 transition truncate max-w-[120px] ${idx === currentFolder.filter(Boolean).length - 1 ? 'text-white font-semibold' : ''}`}
+                          >
+                            {crumb}
+                          </button>
+                        </React.Fragment>
+                      ))}
+                    </>
+                  )}
                 </div>
 
-                {/* Mobile Quick Action Buttons on top right */}
-                <div className="flex items-center gap-2 md:hidden shrink-0">
+                {/* Switch Drive / Back button if a disk is selected */}
+                {selectedDisk && (
                   <button
-                    onClick={() => setShowNewFolderModal(true)}
-                    className="py-1.5 px-2.5 rounded-xl bg-slate-800 text-slate-300 border border-slate-700 text-xs flex items-center gap-1.5 active:scale-95 transition"
-                    title="New Folder"
+                    onClick={() => {
+                      setSelectedDisk(null);
+                      setCurrentFolder(['']);
+                    }}
+                    className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium border border-slate-700 flex items-center gap-1 transition"
                   >
-                    <FolderPlus className="h-3.5 w-3.5 text-blue-400" />
-                    <span className="font-medium">Folder</span>
+                    <span>← All Drives</span>
                   </button>
-                  <label className="py-1.5 px-3 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold flex items-center gap-1.5 cursor-pointer shadow-md shadow-blue-600/30 active:scale-95 transition">
-                    <UploadCloud className="h-3.5 w-3.5" />
-                    <span>Upload</span>
-                    <input type="file" className="hidden" onChange={handleFileUpload} />
-                  </label>
-                </div>
+                )}
+
+                {/* Mobile Quick Action Buttons on top right (when inside a disk) */}
+                {selectedDisk && (
+                  <div className="flex items-center gap-2 md:hidden shrink-0">
+                    <button
+                      onClick={() => setShowNewFolderModal(true)}
+                      className="py-1.5 px-2.5 rounded-xl bg-slate-800 text-slate-300 border border-slate-700 text-xs flex items-center gap-1.5 active:scale-95 transition"
+                      title="New Folder"
+                    >
+                      <FolderPlus className="h-3.5 w-3.5 text-blue-400" />
+                      <span className="font-medium">Folder</span>
+                    </button>
+                    <label className="py-1.5 px-3 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold flex items-center gap-1.5 cursor-pointer shadow-md shadow-blue-600/30 active:scale-95 transition">
+                      <UploadCloud className="h-3.5 w-3.5" />
+                      <span>Upload</span>
+                      <input type="file" className="hidden" onChange={handleFileUpload} />
+                    </label>
+                  </div>
+                )}
               </div>
 
               {/* TAB 1: ALL FILES */}
               {activeTab === 'files' && (
                 <div>
-                  {files.length === 0 && !loading && (
-                    <div className="text-center py-12 sm:py-16 text-slate-400 text-sm max-w-sm mx-auto flex flex-col items-center">
-                      <div className="w-16 h-16 rounded-2xl bg-[#131b2e] border border-slate-800 flex items-center justify-center text-blue-400 mb-4 shadow-xl">
-                        <Folder className="h-8 w-8 text-blue-400/70" />
-                      </div>
-                      <h3 className="text-base font-bold text-white mb-1">This folder is empty</h3>
-                      <p className="text-xs text-slate-400 mb-6 text-center">
-                        Upload your photos, documents, and videos directly to your physical CloudNAS storage.
-                      </p>
-                      <div className="flex flex-col sm:flex-row gap-3 w-full justify-center">
-                        <label className="flex items-center justify-center gap-2 py-3 px-5 bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-500 hover:from-blue-500 hover:to-indigo-500 active:scale-95 text-white font-semibold text-sm rounded-xl cursor-pointer shadow-lg shadow-blue-600/30 transition">
-                          <UploadCloud className="h-4 w-4" /> Upload File
-                          <input type="file" className="hidden" onChange={handleFileUpload} />
-                        </label>
+                  {selectedDisk === null ? (
+                    /* SHOW CONNECTED STORAGE DRIVES FIRST */
+                    <div className="space-y-6">
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-800/80">
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <HardDrive className="h-5 w-5 text-blue-400" />
+                            <h2 className="text-lg sm:text-xl font-bold text-white tracking-tight">Connected Storage Drives</h2>
+                            <span className="px-2.5 py-0.5 rounded-full bg-blue-500/10 text-blue-400 text-xs font-semibold border border-blue-500/20">
+                              {(disksList.length > 0 ? disksList : [diskInfo || {}]).filter((d: any) => d.isConnected !== false).length} Online
+                            </span>
+                          </div>
+                          <p className="text-xs text-slate-400 mt-1">
+                            Click on a USB drive below to open and manage its stored files, photos, and folders.
+                          </p>
+                        </div>
+
                         <button
-                          onClick={() => setShowNewFolderModal(true)}
-                          className="flex items-center justify-center gap-2 py-2.5 px-4 bg-slate-800 hover:bg-slate-700 active:scale-95 text-slate-300 font-medium text-xs rounded-xl border border-slate-700 transition"
+                          onClick={() => fetchCloudFiles()}
+                          className="self-start sm:self-auto px-3 py-1.5 text-slate-300 hover:text-white rounded-xl bg-slate-800/80 border border-slate-700/80 hover:bg-slate-700 transition text-xs flex items-center gap-1.5"
                         >
-                          <FolderPlus className="h-4 w-4 text-blue-400" /> New Folder
+                          <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
+                          <span>Scan for Drives</span>
                         </button>
                       </div>
+
+                      {/* Drive Cards Grid */}
+                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                        {(disksList.length > 0 ? disksList : (diskInfo ? [diskInfo] : [])).map((disk: any, idx: number) => {
+                          const isOnline = disk.isConnected !== false && disk.status !== 'DISCONNECTED';
+                          return (
+                            <div
+                              key={disk.id || disk.device || idx}
+                              onClick={() => {
+                                if (!isOnline) {
+                                  alert('⚠️ This drive is currently disconnected or ejected. Please reconnect the drive to access files.');
+                                  return;
+                                }
+                                setSelectedDisk(disk);
+                                setCurrentFolder(['']);
+                                fetchCloudFiles();
+                              }}
+                              className={`group rounded-2xl border p-5 cursor-pointer transition-all duration-200 relative overflow-hidden flex flex-col justify-between ${
+                                isOnline
+                                  ? 'bg-[#12192c] hover:bg-[#18233e] border-slate-800 hover:border-blue-500/50 hover:shadow-xl hover:shadow-blue-500/10 active:scale-[0.99]'
+                                  : 'bg-[#1a1219] border-rose-900/50 opacity-80'
+                              }`}
+                            >
+                              <div>
+                                {/* Drive Header */}
+                                <div className="flex items-start justify-between mb-4">
+                                  <div className="flex items-center gap-3">
+                                    <div className={`h-12 w-12 rounded-2xl flex items-center justify-center text-white shadow-lg transition ${
+                                      isOnline 
+                                        ? 'bg-gradient-to-tr from-blue-600 to-indigo-600 group-hover:scale-105' 
+                                        : 'bg-rose-950/80 text-rose-400 border border-rose-800/60'
+                                    }`}>
+                                      <HardDrive className="h-6 w-6" />
+                                    </div>
+                                    <div>
+                                      <h3 className="font-bold text-base text-white group-hover:text-blue-400 transition truncate max-w-[170px]">
+                                        {disk.name || 'External Storage'}
+                                      </h3>
+                                      <div className="flex items-center gap-1.5 text-xs text-slate-400 mt-0.5">
+                                        <span className="font-medium text-slate-300">{disk.label || 'CloudNAS'}</span>
+                                        <span>•</span>
+                                        <span className="font-mono text-[11px] text-slate-400">{disk.device || `disk${idx + 1}`}</span>
+                                      </div>
+                                    </div>
+                                  </div>
+
+                                  <span className={`px-2.5 py-1 rounded-full text-[10px] font-semibold flex items-center gap-1.5 border ${
+                                    isOnline
+                                      ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
+                                      : 'bg-rose-500/10 text-rose-400 border-rose-500/30'
+                                  }`}>
+                                    <span className={`h-1.5 w-1.5 rounded-full ${isOnline ? 'bg-emerald-400 animate-pulse' : 'bg-rose-400'}`} />
+                                    {isOnline ? 'ONLINE' : 'EJECTED'}
+                                  </span>
+                                </div>
+
+                                {/* Capacity Bar */}
+                                <div className="space-y-2 mb-4 bg-slate-900/50 p-3 rounded-xl border border-slate-800/60">
+                                  <div className="flex justify-between items-baseline text-xs">
+                                    <span className="text-slate-400 font-medium">Free Space:</span>
+                                    <span className="text-sm font-bold text-emerald-400">{disk.freeStr || quota.freeStr}</span>
+                                  </div>
+                                  <div className="w-full bg-slate-800 h-2 rounded-full overflow-hidden">
+                                    <div
+                                      className={`h-full rounded-full transition-all duration-500 ${
+                                        isOnline
+                                          ? 'bg-gradient-to-r from-blue-500 via-indigo-500 to-emerald-400'
+                                          : 'bg-rose-500/50 w-full'
+                                      }`}
+                                      style={{ width: isOnline ? `${Math.max(3, disk.percent || quota.percent || 2)}%` : '100%' }}
+                                    />
+                                  </div>
+                                  <div className="flex justify-between text-[11px] text-slate-400">
+                                    <span>{disk.usedStr || quota.usedStr} used</span>
+                                    <span className="text-slate-300 font-medium">{disk.totalStr || quota.totalStr} Total</span>
+                                  </div>
+                                </div>
+                              </div>
+
+                              {/* Drive Footer / Action */}
+                              <div className="pt-3 border-t border-slate-800/80 flex items-center justify-between text-xs">
+                                <span className="text-[11px] text-slate-400 truncate max-w-[140px]">
+                                  {disk.mountPoint || 'Physical Storage'}
+                                </span>
+                                <span className="font-semibold text-blue-400 group-hover:text-blue-300 flex items-center gap-1">
+                                  Open Drive <ChevronRight className="h-3.5 w-3.5 group-hover:translate-x-0.5 transition" />
+                                </span>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
                     </div>
-                  )}
+                  ) : (
+                    /* DISK IS SELECTED -> SHOW FILES AND FOLDERS INSIDE SELECTED DISK */
+                    <div>
+                      {files.length === 0 && !loading && (
+                        <div className="text-center py-12 sm:py-16 text-slate-400 text-sm max-w-sm mx-auto flex flex-col items-center">
+                          <div className="w-16 h-16 rounded-2xl bg-[#131b2e] border border-slate-800 flex items-center justify-center text-blue-400 mb-4 shadow-xl">
+                            <Folder className="h-8 w-8 text-blue-400/70" />
+                          </div>
+                          <h3 className="text-base font-bold text-white mb-1">This folder is empty</h3>
+                          <p className="text-xs text-slate-400 mb-6 text-center">
+                            Upload your photos, documents, and videos directly to {selectedDisk.name} ({selectedDisk.label}).
+                          </p>
+                          <div className="flex flex-col sm:flex-row gap-3 w-full justify-center">
+                            <label className="flex items-center justify-center gap-2 py-3 px-5 bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-500 hover:from-blue-500 hover:to-indigo-500 active:scale-95 text-white font-semibold text-sm rounded-xl cursor-pointer shadow-lg shadow-blue-600/30 transition">
+                              <UploadCloud className="h-4 w-4" /> Upload File
+                              <input type="file" className="hidden" onChange={handleFileUpload} />
+                            </label>
+                            <button
+                              onClick={() => setShowNewFolderModal(true)}
+                              className="flex items-center justify-center gap-2 py-2.5 px-4 bg-slate-800 hover:bg-slate-700 active:scale-95 text-slate-300 font-medium text-xs rounded-xl border border-slate-700 transition"
+                            >
+                              <FolderPlus className="h-4 w-4 text-blue-400" /> New Folder
+                            </button>
+                          </div>
+                        </div>
+                      )}
 
                   {viewMode === 'grid' ? (
                     <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3 sm:gap-4">
@@ -965,6 +1143,8 @@ export default function UserCloudPortal() {
                   )}
                 </div>
               )}
+            </div>
+          )}
 
               {/* TAB 2: PHOTOS GALLERY */}
               {activeTab === 'photos' && (

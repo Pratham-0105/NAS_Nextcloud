@@ -466,6 +466,25 @@ router.get('/quota', async (req: Request, res: Response): Promise<void> => {
           isConnected: false,
           status: 'DISCONNECTED',
         },
+        disks: [
+          {
+            id: activePool?.members?.[0]?.name || 'disk12',
+            name: activePool?.members?.[0]?.model || activePool?.members?.[0]?.deviceModel || 'SanDisk 3.2Gen1',
+            label: 'CloudNAS',
+            device: activePool?.members?.[0]?.name || 'disk12',
+            mountPoint: null,
+            filesystem: 'ExFAT',
+            freeStr: '0 B (Ejected)',
+            totalStr: '0 B',
+            usedStr: '0 B',
+            percent: 0,
+            isPhysical: true,
+            isMounted: false,
+            isConnected: false,
+            status: 'DISCONNECTED',
+            type: 'USB 3.2 Storage',
+          }
+        ],
         pool: null,
       });
       return;
@@ -528,6 +547,43 @@ router.get('/quota', async (req: Request, res: Response): Promise<void> => {
         isConnected: true,
         status: 'ONLINE',
       },
+      disks: (activePool?.members && activePool.members.length > 0)
+        ? activePool.members.map((m: any, idx: number) => ({
+            id: m.deviceName || m.name || `disk-${idx}`,
+            name: m.deviceModel || m.model || (idx === 0 ? diskModel : `USB Storage ${idx + 1}`),
+            label: idx === 0 ? diskLabel : `USB_Storage_${idx + 1}`,
+            device: m.deviceName || m.name || `disk${idx + 1}`,
+            mountPoint: idx === 0 ? mountLocation : null,
+            filesystem: 'ExFAT',
+            freeStr: `${freeGb} GB`,
+            totalStr: totalGb !== '0.0' ? `${totalGb} GB` : `${((m.totalBytes || m.size || 123048296448) / 1e9).toFixed(1)} GB`,
+            usedStr: usedStr,
+            percent: poolRelative,
+            isPhysical: true,
+            isMounted: idx === 0 ? true : false,
+            isConnected: true,
+            status: 'ONLINE',
+            type: 'USB 3.2 Drive',
+          }))
+        : [
+            {
+              id: 'disk12',
+              name: diskModel,
+              label: diskLabel,
+              device: 'disk12',
+              mountPoint: mountLocation,
+              filesystem: 'ExFAT',
+              freeStr: `${freeGb} GB`,
+              totalStr: `${totalGb} GB`,
+              usedStr: usedStr,
+              percent: poolRelative,
+              isPhysical: true,
+              isMounted: true,
+              isConnected: true,
+              status: 'ONLINE',
+              type: 'USB 3.2 Drive',
+            }
+          ],
       pool: activePool
         ? {
             id: activePool.id,
