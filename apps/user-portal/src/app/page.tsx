@@ -617,16 +617,19 @@ export default function UserCloudPortal() {
     const username = currentUser?.nextcloudUser || currentUser?.id || 'clouduser';
     const apiUrl = process.env.NEXT_PUBLIC_USER_API_URL || '/api';
     try {
-      const res = await fetch(`${apiUrl}/files/delete`, {
-        method: 'DELETE',
+      const res = await fetch(`${apiUrl}/files/delete?user=${encodeURIComponent(username)}&path=${encodeURIComponent(filePath)}`, {
+        method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-user-id': username },
         body: JSON.stringify({ path: filePath }),
       });
       if (res.ok) {
         fetchCloudFiles();
+      } else {
+        const errData = await res.json().catch(() => null);
+        alert(errData?.error || errData?.message || `Failed to delete item (HTTP ${res.status})`);
       }
-    } catch {
-      //
+    } catch (err: any) {
+      alert(`Delete error: ${err.message || 'Network request failed'}`);
     }
   };
 
@@ -685,8 +688,10 @@ export default function UserCloudPortal() {
     const apiUrl = process.env.NEXT_PUBLIC_USER_API_URL || '/api';
 
     try {
-      const res = await fetch(`${apiUrl}/files/delete?user=${encodeURIComponent(username)}`, {
-        method: 'DELETE',
+      // POST preserves body payload across all proxies/rewrites, with encoded query fallback
+      const encodedPathsParam = encodeURIComponent(JSON.stringify(selectedFilePaths));
+      const res = await fetch(`${apiUrl}/files/delete?user=${encodeURIComponent(username)}&paths=${encodedPathsParam}`, {
+        method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-user-id': username },
         body: JSON.stringify({ paths: selectedFilePaths }),
       });
@@ -697,7 +702,8 @@ export default function UserCloudPortal() {
         fetchCloudFiles();
       } else {
         const errData = await res.json().catch(() => null);
-        alert(errData?.error || 'Failed to delete selected items');
+        const errMsg = errData?.error || errData?.message || (res.status ? `Deletion failed (Server HTTP ${res.status}: ${res.statusText || 'Error'})` : 'Failed to delete selected items');
+        alert(errMsg);
       }
     } catch (err: any) {
       alert(`Deletion error: ${err.message || 'Network request failed'}`);

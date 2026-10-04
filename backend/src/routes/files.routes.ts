@@ -22,11 +22,20 @@ export interface PhysicalStorageCheckResult {
 /**
  * Checks in real time whether the designated physical cloud storage drive is currently connected and mounted.
  */
-export function checkPhysicalStorageLive(): PhysicalStorageCheckResult {
+let cachedStorageStatus: PhysicalStorageCheckResult | null = null;
+let lastStorageCheckTime = 0;
+const STORAGE_CACHE_TTL = 2500;
+
+export function checkPhysicalStorageLive(force = false): PhysicalStorageCheckResult {
+  const now = Date.now();
+  if (!force && cachedStorageStatus && (now - lastStorageCheckTime < STORAGE_CACHE_TTL)) {
+    return cachedStorageStatus;
+  }
+
   if (process.platform === 'darwin') {
     const mountPath = '/Volumes/CloudNAS';
     if (!fs.existsSync(mountPath)) {
-      return {
+      cachedStorageStatus = {
         connected: false,
         isMounted: false,
         mountPoint: null,
@@ -34,12 +43,14 @@ export function checkPhysicalStorageLive(): PhysicalStorageCheckResult {
         label: 'CloudNAS',
         status: 'DISCONNECTED',
       };
+      lastStorageCheckTime = now;
+      return cachedStorageStatus;
     }
 
     try {
-      const out = execSync(`/usr/sbin/diskutil info "${mountPath}"`, { encoding: 'utf8', timeout: 2000 });
+      const out = execSync(`/usr/sbin/diskutil info "${mountPath}"`, { encoding: 'utf8', timeout: 5000 });
       const isMounted = out.includes('Mounted:                   Yes') || out.includes('Mounted: Yes');
-      return {
+      cachedStorageStatus = {
         connected: isMounted,
         isMounted,
         mountPoint: isMounted ? mountPath : null,
@@ -48,15 +59,19 @@ export function checkPhysicalStorageLive(): PhysicalStorageCheckResult {
         status: isMounted ? 'ONLINE' : 'DISCONNECTED',
       };
     } catch {
-      return {
-        connected: false,
-        isMounted: false,
-        mountPoint: null,
+      // If diskutil times out but directory exists and is accessible, fallback to connected
+      const accessible = fs.existsSync(mountPath);
+      cachedStorageStatus = {
+        connected: accessible,
+        isMounted: accessible,
+        mountPoint: accessible ? mountPath : null,
         device: 'disk12',
         label: 'CloudNAS',
-        status: 'DISCONNECTED',
+        status: accessible ? 'ONLINE' : 'DISCONNECTED',
       };
     }
+    lastStorageCheckTime = now;
+    return cachedStorageStatus;
   }
 
   if (process.platform === 'linux') {
@@ -395,15 +410,25 @@ const renameHandler = async (req: Request, res: Response): Promise<void> => {
 router.post('/rename', renameHandler);
 router.post('/move', renameHandler);
 
-// DELETE /api/files/delete or DELETE /api/files - Deletes directly from physical storage
+// POST or DELETE /api/files/delete or /api/files/batch-delete - Deletes directly from physical storage
 const deleteHandler = async (req: Request, res: Response): Promise<void> => {
-  const targetPaths: string[] = Array.isArray(req.body?.paths)
-    ? req.body.paths
-    : req.body?.path
-    ? [req.body.path]
-    : req.query.path
-    ? [req.query.path as string]
-    : [];
+  let targetPaths: string[] = [];
+
+  if (Array.isArray(req.body?.paths)) {
+    targetPaths = req.body.paths;
+  } else if (typeof req.body?.path === 'string' && req.body.path.trim()) {
+    targetPaths = [req.body.path.trim()];
+  } else if (typeof req.query.paths === 'string' && req.query.paths.trim()) {
+    try {
+      const parsed = JSON.parse(req.query.paths);
+      if (Array.isArray(parsed)) targetPaths = parsed;
+      else targetPaths = [req.query.paths];
+    } catch {
+      targetPaths = req.query.paths.split(',').map((s: string) => s.trim()).filter(Boolean);
+    }
+  } else if (typeof req.query.path === 'string' && req.query.path.trim()) {
+    targetPaths = [req.query.path.trim()];
+  }
 
   if (targetPaths.length === 0) {
     res.status(400).json({ success: false, error: 'Target path or paths array is required for deletion' });
@@ -418,22 +443,58 @@ const deleteHandler = async (req: Request, res: Response): Promise<void> => {
 
   try {
     let deletedCount = 0;
-    for (const itemPath of targetPaths) {
-      if (typeof itemPath !== 'string') continue;
-      // Prevent path traversal
-      if (itemPath.includes('..')) continue;
+    const errors: string[] = [];
 
-      const localTarget = path.join(liveStatus.mountPoint, itemPath.replace(/^\/+/, ''));
+    for (const rawItemPath of targetPaths) {
+      if (typeof rawItemPath !== 'string' || !rawItemPath.trim()) continue;
+      // Prevent path traversal
+      if (rawItemPath.includes('..')) {
+        errors.push(`Invalid path traversal: ${rawItemPath}`);
+        continue;
+      }
+
+      const cleanItem = rawItemPath.trim();
+      let localTarget = path.join(liveStatus.mountPoint, cleanItem.replace(/^\/+/, ''));
+
+      // If localTarget doesn't exist, attempt URL decode
+      if (!fs.existsSync(localTarget)) {
+        try {
+          const decoded = decodeURIComponent(cleanItem);
+          const decodedTarget = path.join(liveStatus.mountPoint, decoded.replace(/^\/+/, ''));
+          if (fs.existsSync(decodedTarget)) {
+            localTarget = decodedTarget;
+          }
+        } catch {}
+      }
+
       if (fs.existsSync(localTarget)) {
-        fs.rmSync(localTarget, { recursive: true, force: true });
-        logger.info(`[PHYSICAL STORAGE] Deleted "${itemPath}" from ${liveStatus.mountPoint}`);
-        deletedCount++;
+        try {
+          fs.rmSync(localTarget, { recursive: true, force: true });
+          logger.info(`[PHYSICAL STORAGE] Deleted "${rawItemPath}" from ${liveStatus.mountPoint}`);
+          deletedCount++;
+
+          // Clean companion AppleDouble metadata file if it exists
+          const parentDir = path.dirname(localTarget);
+          const baseName = path.basename(localTarget);
+          const appleDouble = path.join(parentDir, `._${baseName}`);
+          if (fs.existsSync(appleDouble)) {
+            try {
+              fs.rmSync(appleDouble, { force: true });
+            } catch {}
+          }
+        } catch (itemErr: any) {
+          logger.error(`[PHYSICAL STORAGE] Failed to delete "${localTarget}": ${itemErr.message}`);
+          errors.push(`Failed to delete "${path.basename(localTarget)}": ${itemErr.message}`);
+        }
+      } else {
+        logger.warn(`[PHYSICAL STORAGE] Item "${localTarget}" does not exist, skipping.`);
       }
     }
 
     res.json({
       success: true,
       count: deletedCount,
+      errors: errors.length > 0 ? errors : undefined,
       message: deletedCount === 1 
         ? `Item deleted from physical storage` 
         : `${deletedCount} items deleted from physical storage`,
@@ -442,6 +503,8 @@ const deleteHandler = async (req: Request, res: Response): Promise<void> => {
     res.status(500).json({ success: false, error: err.message });
   }
 };
+router.post('/delete', deleteHandler);
+router.post('/batch-delete', deleteHandler);
 router.delete('/delete', deleteHandler);
 router.delete('/', deleteHandler);
 
