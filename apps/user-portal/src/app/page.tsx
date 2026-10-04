@@ -688,13 +688,22 @@ export default function UserCloudPortal() {
     const apiUrl = process.env.NEXT_PUBLIC_USER_API_URL || '/api';
 
     try {
-      // POST preserves body payload across all proxies/rewrites, with encoded query fallback
-      const encodedPathsParam = encodeURIComponent(JSON.stringify(selectedFilePaths));
-      const res = await fetch(`${apiUrl}/files/delete?user=${encodeURIComponent(username)}&paths=${encodedPathsParam}`, {
+      // Use clean POST body to avoid URL length issues and proxy header overflow
+      const deletePayload = JSON.stringify({ paths: selectedFilePaths });
+      const deleteUrl = `${apiUrl}/files/delete?user=${encodeURIComponent(username)}`;
+      const requestOptions = {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-user-id': username },
-        body: JSON.stringify({ paths: selectedFilePaths }),
-      });
+        body: deletePayload,
+      };
+
+      let res = await fetch(deleteUrl, requestOptions);
+
+      // Auto-retry once on transient proxy / tunnel 5xx hiccups
+      if (!res.ok && res.status >= 500) {
+        await new Promise(r => setTimeout(r, 800));
+        res = await fetch(deleteUrl, requestOptions).catch(() => res);
+      }
 
       if (res.ok) {
         setSelectedFilePaths([]);
@@ -704,9 +713,12 @@ export default function UserCloudPortal() {
         const errData = await res.json().catch(() => null);
         const errMsg = errData?.error || errData?.message || (res.status ? `Deletion failed (Server HTTP ${res.status}: ${res.statusText || 'Error'})` : 'Failed to delete selected items');
         alert(errMsg);
+        // Refresh to reflect any items that were actually deleted
+        fetchCloudFiles();
       }
     } catch (err: any) {
       alert(`Deletion error: ${err.message || 'Network request failed'}`);
+      fetchCloudFiles();
     } finally {
       setIsBatchDeleting(false);
     }
