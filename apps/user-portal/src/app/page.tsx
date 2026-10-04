@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { 
   Folder, 
   FileText, 
@@ -28,7 +28,20 @@ import {
   User,
   LogOut,
   Key,
-  Menu
+  Menu,
+  FileUp,
+  FolderUp,
+  Zap,
+  Clock,
+  Sparkles,
+  ChevronUp,
+  ChevronDown,
+  CheckCircle2,
+  FileCode,
+  Music,
+  Archive,
+  Layers,
+  Check
 } from 'lucide-react';
 
 interface FileItem {
@@ -39,6 +52,21 @@ interface FileItem {
   modified: string;
   url?: string;
 }
+
+export interface UploadQueueItem {
+  id: string;
+  name: string;
+  relativePath: string;
+  size: number;
+  sizeFormatted: string;
+  progress: number;
+  loadedBytes: number;
+  status: 'queued' | 'uploading' | 'completed' | 'error';
+  speedStr?: string;
+  error?: string;
+  file: File;
+}
+
 
 export default function UserCloudPortal() {
   // Authentication State
@@ -58,11 +86,24 @@ export default function UserCloudPortal() {
   const [currentFolder, setCurrentFolder] = useState<string[]>(['']);
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
   const [searchQuery, setSearchQuery] = useState('');
-  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [previewFile, setPreviewFile] = useState<FileItem | null>(null);
   const [showNewFolderModal, setShowNewFolderModal] = useState(false);
   const [newFolderName, setNewFolderName] = useState('');
   const [loading, setLoading] = useState(false);
+
+  // Advanced Upload Engine & Queue State
+  const [uploadQueue, setUploadQueue] = useState<UploadQueueItem[]>([]);
+  const [isUploading, setIsUploading] = useState(false);
+  const [uploadManagerOpen, setUploadManagerOpen] = useState(false);
+  const [uploadManagerMinimized, setUploadManagerMinimized] = useState(false);
+  const [uploadModalOpen, setUploadModalOpen] = useState(false);
+  const [isDragOver, setIsDragOver] = useState(false);
+  const [currentSpeedStr, setCurrentSpeedStr] = useState<string>('0 KB/s');
+  const [uploadEtaStr, setUploadEtaStr] = useState<string>('');
+
+  const multiFileInputRef = useRef<HTMLInputElement | null>(null);
+  const folderInputRef = useRef<HTMLInputElement | null>(null);
+
 
   // Real Physical Disk & Quota State
   const [quota, setQuota] = useState<{ usedStr: string; totalStr: string; freeStr: string; percent: number }>({
@@ -265,50 +306,277 @@ export default function UserCloudPortal() {
 
   const photos = files.filter(f => f.type === 'image');
 
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+  // Size Formatter
+  const formatBytes = (bytes: number, decimals = 1) => {
+    if (bytes === 0) return '0 B';
+    const k = 1024;
+    const dm = decimals < 0 ? 0 : decimals;
+    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return `${parseFloat((bytes / Math.pow(k, i)).toFixed(dm))} ${sizes[i]}`;
+  };
 
-    // Hardware Safety Guard: prevent uploading when drive is disconnected / ejected
+  // Enqueue Files & Folders for Upload
+  const enqueueFiles = useCallback((itemsList: { file: File; relativePath?: string }[]) => {
+    if (!itemsList || itemsList.length === 0) return;
+
     if (diskInfo && (diskInfo.isConnected === false || diskInfo.status === 'DISCONNECTED')) {
-      alert('⚠️ Cannot upload file: The physical CloudNAS storage drive is disconnected or ejected. Please reconnect your drive first.');
-      if (e.target) e.target.value = '';
+      alert('⚠️ Cannot upload files: The physical CloudNAS storage drive is disconnected or ejected. Please reconnect your drive first.');
       return;
     }
 
-    setUploadProgress(15);
-    const interval = setInterval(() => {
-      setUploadProgress(prev => (prev === null || prev >= 90 ? 90 : prev + 25));
-    }, 200);
+    const newItems: UploadQueueItem[] = itemsList.map(({ file, relativePath }) => ({
+      id: `${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
+      name: file.name,
+      relativePath: relativePath || (file as any).webkitRelativePath || '',
+      size: file.size,
+      sizeFormatted: formatBytes(file.size),
+      progress: 0,
+      loadedBytes: 0,
+      status: 'queued',
+      file,
+    }));
 
-    const username = currentUser?.nextcloudUser || currentUser?.id || 'clouduser';
-    try {
+    setUploadQueue(prev => [...prev, ...newItems]);
+    setUploadManagerOpen(true);
+    setUploadManagerMinimized(false);
+  }, [diskInfo]);
+
+  // Queue Processor Engine using XMLHttpRequest for byte-level accuracy & live speeds
+  useEffect(() => {
+    if (isUploading) return;
+    const nextItem = uploadQueue.find(item => item.status === 'queued');
+    if (!nextItem) return;
+
+    const processUpload = async (item: UploadQueueItem) => {
+      setIsUploading(true);
+      setUploadQueue(prev => prev.map(q => q.id === item.id ? { ...q, status: 'uploading' } : q));
+
+      const username = currentUser?.nextcloudUser || currentUser?.id || 'clouduser';
       const apiUrl = process.env.NEXT_PUBLIC_USER_API_URL || '/api';
-      const formData = new FormData();
-      formData.append('file', file);
-      formData.append('path', getFolderPath());
+      const folderPath = getFolderPath();
 
-      const res = await fetch(`${apiUrl}/files/upload?user=${encodeURIComponent(username)}`, {
-        method: 'POST',
-        body: formData,
+      await new Promise<void>((resolve) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', `${apiUrl}/files/upload?user=${encodeURIComponent(username)}`);
+
+        let lastLoaded = 0;
+        let lastTime = Date.now();
+
+        xhr.upload.onprogress = (e) => {
+          if (e.lengthComputable) {
+            const percent = Math.min(99, Math.round((e.loaded / e.total) * 100));
+            const now = Date.now();
+            const elapsedSec = (now - lastTime) / 1000;
+            if (elapsedSec >= 0.2) {
+              const bytesDiff = e.loaded - lastLoaded;
+              const bps = bytesDiff / elapsedSec;
+              const speed = bps > 1024 * 1024
+                ? `${(bps / (1024 * 1024)).toFixed(1)} MB/s`
+                : `${(bps / 1024).toFixed(0)} KB/s`;
+              const remainingBytes = Math.max(0, e.total - e.loaded);
+              const etaSec = bps > 0 ? Math.ceil(remainingBytes / bps) : 0;
+              const eta = etaSec > 60 ? `${Math.ceil(etaSec / 60)}m` : `${etaSec}s`;
+
+              setCurrentSpeedStr(speed);
+              setUploadEtaStr(eta);
+              lastLoaded = e.loaded;
+              lastTime = now;
+            }
+
+            setUploadQueue(prev => prev.map(q => q.id === item.id ? {
+              ...q,
+              progress: percent,
+              loadedBytes: e.loaded,
+            } : q));
+          }
+        };
+
+        xhr.onload = () => {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            setUploadQueue(prev => prev.map(q => q.id === item.id ? {
+              ...q,
+              progress: 100,
+              loadedBytes: q.size,
+              status: 'completed',
+            } : q));
+            fetchCloudFiles(true);
+          } else {
+            let errText = 'Upload failed';
+            try {
+              const parsed = JSON.parse(xhr.responseText);
+              errText = parsed.error || errText;
+            } catch {}
+            setUploadQueue(prev => prev.map(q => q.id === item.id ? {
+              ...q,
+              status: 'error',
+              error: errText,
+            } : q));
+          }
+          resolve();
+        };
+
+        xhr.onerror = () => {
+          setUploadQueue(prev => prev.map(q => q.id === item.id ? {
+            ...q,
+            status: 'error',
+            error: 'Network connection error',
+          } : q));
+          resolve();
+        };
+
+        const formData = new FormData();
+        formData.append('file', item.file);
+        formData.append('path', folderPath);
+        if (item.relativePath) {
+          formData.append('relativePath', item.relativePath);
+        }
+        xhr.send(formData);
       });
 
-      clearInterval(interval);
-      setUploadProgress(100);
-      setTimeout(() => setUploadProgress(null), 1200);
+      setIsUploading(false);
+    };
 
-      if (res.ok) {
-        fetchCloudFiles();
-      } else {
-        const errData = await res.json().catch(() => null);
-        alert(errData?.error || 'Upload failed');
+    processUpload(nextItem);
+  }, [uploadQueue, isUploading, currentUser, getFolderPath, fetchCloudFiles]);
+
+  // Derived Real-Time Batch Metrics
+  const totalQueueBytes = uploadQueue.reduce((acc, it) => acc + it.size, 0);
+  const totalLoadedBytes = uploadQueue.reduce((acc, it) => acc + (it.status === 'completed' ? it.size : it.loadedBytes), 0);
+  const overallUploadPercent = totalQueueBytes > 0 ? Math.min(100, Math.round((totalLoadedBytes / totalQueueBytes) * 100)) : 0;
+  const completedUploadsCount = uploadQueue.filter(it => it.status === 'completed').length;
+  const errorUploadsCount = uploadQueue.filter(it => it.status === 'error').length;
+  const activeUploadItem = uploadQueue.find(it => it.status === 'uploading');
+  const allUploadsFinished = uploadQueue.length > 0 && !uploadQueue.some(it => it.status === 'queued' || it.status === 'uploading');
+
+  // Input Selection Handlers
+  const handleFilesSelected = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files.length > 0) {
+      const filesArr = Array.from(e.target.files).map(file => ({
+        file,
+        relativePath: '',
+      }));
+      enqueueFiles(filesArr);
+      e.target.value = '';
+    }
+    setUploadModalOpen(false);
+  };
+
+  const handleFolderSelected = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files.length > 0) {
+      const filesArr = Array.from(e.target.files).map(file => ({
+        file,
+        relativePath: file.webkitRelativePath || '',
+      }));
+      enqueueFiles(filesArr);
+      e.target.value = '';
+    }
+    setUploadModalOpen(false);
+  };
+
+  // Drag and Drop Scanner with Recursive Folder Support
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!isDragOver) setIsDragOver(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.currentTarget.contains(e.relatedTarget as Node)) return;
+    setIsDragOver(false);
+  };
+
+  const handleDrop = async (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragOver(false);
+
+    if (diskInfo && (diskInfo.isConnected === false || diskInfo.status === 'DISCONNECTED')) {
+      alert('⚠️ Cannot upload: The physical CloudNAS storage drive is disconnected or ejected.');
+      return;
+    }
+
+    const items = e.dataTransfer.items;
+    const collectedFiles: { file: File; relativePath?: string }[] = [];
+
+    if (items && items.length > 0 && typeof items[0].webkitGetAsEntry === 'function') {
+      const traverseEntry = (entry: any, curPath: string): Promise<void> => {
+        return new Promise((resolve) => {
+          if (!entry) return resolve();
+          if (entry.isFile) {
+            entry.file((file: File) => {
+              collectedFiles.push({
+                file,
+                relativePath: curPath ? `${curPath}/${file.name}` : file.name,
+              });
+              resolve();
+            }, () => resolve());
+          } else if (entry.isDirectory) {
+            const dirReader = entry.createReader();
+            const readBatch = () => {
+              dirReader.readEntries((entries: any[]) => {
+                if (!entries || entries.length === 0) {
+                  resolve();
+                } else {
+                  const subPromises = entries.map((child: any) =>
+                    traverseEntry(child, curPath ? `${curPath}/${entry.name}` : entry.name)
+                  );
+                  Promise.all(subPromises).then(() => readBatch());
+                }
+              }, () => resolve());
+            };
+            readBatch();
+          } else {
+            resolve();
+          }
+        });
+      };
+
+      const rootPromises: Promise<void>[] = [];
+      for (let i = 0; i < items.length; i++) {
+        const entry = items[i].webkitGetAsEntry();
+        if (entry) {
+          rootPromises.push(traverseEntry(entry, ''));
+        }
       }
-    } catch (err: any) {
-      clearInterval(interval);
-      setUploadProgress(null);
-      alert(`Upload error: ${err.message || 'Network request failed'}`);
+      await Promise.all(rootPromises);
+    } else {
+      for (let i = 0; i < e.dataTransfer.files.length; i++) {
+        const file = e.dataTransfer.files[i];
+        collectedFiles.push({
+          file,
+          relativePath: (file as any).webkitRelativePath || file.name,
+        });
+      }
+    }
+
+    if (collectedFiles.length > 0) {
+      enqueueFiles(collectedFiles);
     }
   };
+
+  const getFileBadgeIcon = (fileName: string) => {
+    const ext = fileName.split('.').pop()?.toLowerCase();
+    if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg', 'heic'].includes(ext || '')) {
+      return <ImageIcon className="h-4 w-4 text-emerald-400 shrink-0" />;
+    }
+    if (['mp4', 'mov', 'mkv', 'avi', 'webm'].includes(ext || '')) {
+      return <Film className="h-4 w-4 text-purple-400 shrink-0" />;
+    }
+    if (['mp3', 'wav', 'flac', 'aac', 'm4a'].includes(ext || '')) {
+      return <Music className="h-4 w-4 text-amber-400 shrink-0" />;
+    }
+    if (['zip', 'tar', 'gz', '7z', 'rar'].includes(ext || '')) {
+      return <Archive className="h-4 w-4 text-orange-400 shrink-0" />;
+    }
+    if (['js', 'ts', 'tsx', 'jsx', 'html', 'css', 'json', 'py', 'sh'].includes(ext || '')) {
+      return <FileCode className="h-4 w-4 text-cyan-400 shrink-0" />;
+    }
+    return <FileText className="h-4 w-4 text-blue-400 shrink-0" />;
+  };
+
 
   const handleCreateFolder = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -496,7 +764,10 @@ export default function UserCloudPortal() {
   }
 
   return (
-    <div className="flex h-screen bg-[#0b0f19] text-slate-100 overflow-hidden">
+    <div 
+      className="flex h-screen bg-[#0b0f19] text-slate-100 overflow-hidden relative"
+      onDragOver={handleDragOver}
+    >
       {/* Sidebar (Desktop / Tablet) */}
       <aside className="w-64 bg-[#111728] border-r border-slate-800 p-5 hidden md:flex flex-col justify-between shrink-0">
         <div className="space-y-6">
@@ -513,10 +784,12 @@ export default function UserCloudPortal() {
 
           {/* Action Buttons */}
           <div className="space-y-2">
-            <label className="flex items-center justify-center gap-2 w-full py-2.5 px-4 bg-blue-600 hover:bg-blue-500 active:scale-95 text-white font-medium text-sm rounded-xl cursor-pointer shadow-lg shadow-blue-600/20 transition">
-              <Plus className="h-4 w-4" /> Upload File
-              <input type="file" className="hidden" onChange={handleFileUpload} />
-            </label>
+            <button
+              onClick={() => setUploadModalOpen(true)}
+              className="flex items-center justify-center gap-2 w-full py-2.5 px-4 bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-500 hover:from-blue-500 hover:to-indigo-500 active:scale-95 text-white font-semibold text-sm rounded-xl cursor-pointer shadow-lg shadow-blue-600/25 transition"
+            >
+              <UploadCloud className="h-4 w-4" /> Upload Items
+            </button>
             <button
               onClick={() => setShowNewFolderModal(true)}
               className="flex items-center justify-center gap-2 w-full py-2 px-4 bg-slate-800 hover:bg-slate-700 text-slate-300 font-medium text-xs rounded-xl border border-slate-700 transition"
@@ -701,11 +974,13 @@ export default function UserCloudPortal() {
           {/* View Toggles & Actions */}
           <div className="flex items-center gap-1.5 sm:gap-3">
             {/* Direct Upload Button in Top Bar (Unmissable on all screens) */}
-            <label className="flex items-center gap-1.5 py-1.5 px-2.5 sm:px-3 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-semibold cursor-pointer shadow-md shadow-blue-600/30 active:scale-95 transition shrink-0">
+            <button
+              onClick={() => setUploadModalOpen(true)}
+              className="flex items-center gap-1.5 py-1.5 px-2.5 sm:px-3.5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white rounded-xl text-xs font-semibold cursor-pointer shadow-md shadow-blue-600/30 active:scale-95 transition shrink-0"
+            >
               <UploadCloud className="h-4 w-4" />
               <span className="font-medium">Upload</span>
-              <input type="file" className="hidden" onChange={handleFileUpload} />
-            </label>
+            </button>
 
             {/* Active Physical Disk Badge */}
             {diskInfo && (
@@ -792,16 +1067,65 @@ export default function UserCloudPortal() {
           </div>
         </header>
 
-        {/* Upload Progress Notification */}
-        {uploadProgress !== null && (
-          <div className="bg-blue-600 text-white px-4 py-2 flex items-center justify-between text-xs font-medium animate-pulse">
-            <div className="flex items-center gap-2">
-              <UploadCloud className="h-4 w-4 animate-bounce" />
-              <span>Uploading to Nextcloud Storage: {uploadProgress}%</span>
+        {/* Real-time Dynamic Upload Strip / Bar */}
+        {uploadQueue.length > 0 && (
+          <div 
+            onClick={() => { setUploadManagerOpen(true); setUploadManagerMinimized(false); }}
+            className={`cursor-pointer px-4 py-2.5 flex items-center justify-between text-xs font-medium transition-all ${
+              allUploadsFinished 
+                ? 'bg-gradient-to-r from-emerald-600 via-teal-600 to-emerald-700 text-white shadow-lg shadow-emerald-500/20' 
+                : 'bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-700 text-white shadow-lg shadow-blue-500/25'
+            }`}
+          >
+            <div className="flex items-center gap-3 truncate mr-2">
+              {allUploadsFinished ? (
+                <div className="p-1 rounded-full bg-white/20">
+                  <CheckCircle2 className="h-4 w-4 text-emerald-200" />
+                </div>
+              ) : (
+                <div className="p-1 rounded-full bg-white/20 animate-pulse">
+                  <UploadCloud className="h-4 w-4 animate-bounce" />
+                </div>
+              )}
+              <div className="flex flex-col sm:flex-row sm:items-center sm:gap-2 truncate">
+                <span className="font-bold">
+                  {allUploadsFinished 
+                    ? `Uploaded ${completedUploadsCount} items successfully!` 
+                    : `Uploading to Nextcloud: ${completedUploadsCount}/${uploadQueue.length} (${overallUploadPercent}%)`}
+                </span>
+                {!allUploadsFinished && activeUploadItem && (
+                  <span className="text-[11px] text-blue-100 truncate opacity-90 hidden sm:inline">
+                    • {activeUploadItem.name} {activeUploadItem.relativePath ? `(${activeUploadItem.relativePath})` : ''}
+                  </span>
+                )}
+              </div>
             </div>
-            {uploadProgress === 100 && (
-              <span className="flex items-center gap-1 font-semibold"><CheckCircle className="h-3.5 w-3.5" /> Upload Complete</span>
-            )}
+
+            <div className="flex items-center gap-3 shrink-0">
+              {!allUploadsFinished ? (
+                <div className="flex items-center gap-2">
+                  <span className="px-2 py-0.5 rounded-full bg-black/25 text-[11px] font-mono font-semibold text-blue-200 flex items-center gap-1">
+                    <Zap className="h-3 w-3 text-amber-300" /> {currentSpeedStr}
+                  </span>
+                  {uploadEtaStr && (
+                    <span className="text-[11px] text-blue-200 hidden xs:inline">ETA: {uploadEtaStr}</span>
+                  )}
+                  <span className="text-[10px] bg-white/20 hover:bg-white/30 px-2 py-1 rounded-lg transition font-semibold">
+                    View Manager
+                  </span>
+                </div>
+              ) : (
+                <button 
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setUploadQueue([]);
+                  }}
+                  className="px-2.5 py-1 rounded-lg bg-black/25 hover:bg-black/40 text-[11px] font-semibold transition"
+                >
+                  Dismiss
+                </button>
+              )}
+            </div>
           </div>
         )}
 
@@ -919,11 +1243,13 @@ export default function UserCloudPortal() {
                       <FolderPlus className="h-3.5 w-3.5 text-blue-400" />
                       <span className="font-medium">Folder</span>
                     </button>
-                    <label className="py-1.5 px-3 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold flex items-center gap-1.5 cursor-pointer shadow-md shadow-blue-600/30 active:scale-95 transition">
+                    <button
+                      onClick={() => setUploadModalOpen(true)}
+                      className="py-1.5 px-3 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold flex items-center gap-1.5 cursor-pointer shadow-md shadow-blue-600/30 active:scale-95 transition"
+                    >
                       <UploadCloud className="h-3.5 w-3.5" />
                       <span>Upload</span>
-                      <input type="file" className="hidden" onChange={handleFileUpload} />
-                    </label>
+                    </button>
                   </div>
                 )}
               </div>
@@ -1062,10 +1388,12 @@ export default function UserCloudPortal() {
                             Upload your photos, documents, and videos directly to {selectedDisk.name} ({selectedDisk.label}).
                           </p>
                           <div className="flex flex-col sm:flex-row gap-3 w-full justify-center">
-                            <label className="flex items-center justify-center gap-2 py-3 px-5 bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-500 hover:from-blue-500 hover:to-indigo-500 active:scale-95 text-white font-semibold text-sm rounded-xl cursor-pointer shadow-lg shadow-blue-600/30 transition">
-                              <UploadCloud className="h-4 w-4" /> Upload File
-                              <input type="file" className="hidden" onChange={handleFileUpload} />
-                            </label>
+                            <button
+                              onClick={() => setUploadModalOpen(true)}
+                              className="flex items-center justify-center gap-2 py-3 px-5 bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-500 hover:from-blue-500 hover:to-indigo-500 active:scale-95 text-white font-semibold text-sm rounded-xl cursor-pointer shadow-lg shadow-blue-600/30 transition"
+                            >
+                              <UploadCloud className="h-4 w-4" /> Upload Items
+                            </button>
                             <button
                               onClick={() => setShowNewFolderModal(true)}
                               className="flex items-center justify-center gap-2 py-2.5 px-4 bg-slate-800 hover:bg-slate-700 active:scale-95 text-slate-300 font-medium text-xs rounded-xl border border-slate-700 transition"
@@ -1176,11 +1504,13 @@ export default function UserCloudPortal() {
       </div>
 
       {/* Mobile Floating Action Button (FAB) for fast thumb uploads */}
-      <label className="md:hidden fixed bottom-20 right-4 z-40 flex items-center gap-2 px-4 py-3 bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-500 hover:from-blue-500 hover:to-indigo-500 text-white font-semibold text-xs rounded-full shadow-2xl shadow-blue-500/50 border border-blue-400/40 cursor-pointer active:scale-90 transition">
+      <button 
+        onClick={() => setUploadModalOpen(true)}
+        className="md:hidden fixed bottom-20 right-4 z-40 flex items-center gap-2 px-4 py-3 bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-500 hover:from-blue-500 hover:to-indigo-500 text-white font-semibold text-xs rounded-full shadow-2xl shadow-blue-500/50 border border-blue-400/40 cursor-pointer active:scale-90 transition"
+      >
         <UploadCloud className="h-4 w-4" />
-        <span>Upload File</span>
-        <input type="file" className="hidden" onChange={handleFileUpload} />
-      </label>
+        <span>Upload Items</span>
+      </button>
 
       {/* Mobile Bottom Navigation Bar (Native App Feel) */}
       <div className="fixed bottom-0 left-0 right-0 h-16 bg-[#0f1627]/95 backdrop-blur-xl border-t border-slate-800 z-40 flex items-center justify-around px-2 md:hidden">
@@ -1205,13 +1535,15 @@ export default function UserCloudPortal() {
         </button>
 
         {/* Highlighted Mobile Floating Upload Button */}
-        <label className="flex flex-col items-center -mt-5 cursor-pointer group">
+        <button 
+          onClick={() => setUploadModalOpen(true)}
+          className="flex flex-col items-center -mt-5 cursor-pointer group"
+        >
           <div className="h-12 w-12 rounded-full bg-gradient-to-tr from-blue-600 via-indigo-600 to-blue-500 text-white shadow-xl shadow-blue-600/40 flex items-center justify-center border-4 border-[#0b0f19] active:scale-90 transition">
             <Plus className="h-6 w-6 stroke-[2.5]" />
           </div>
           <span className="text-[10px] text-blue-400 font-semibold mt-0.5">Upload</span>
-          <input type="file" className="hidden" onChange={handleFileUpload} />
-        </label>
+        </button>
 
         <button
           onClick={() => setMobileStorageOpen(true)}
@@ -1290,17 +1622,15 @@ export default function UserCloudPortal() {
 
               {/* Action Buttons */}
               <div className="space-y-2">
-                <label className="flex items-center justify-center gap-2 w-full py-2.5 px-4 bg-blue-600 hover:bg-blue-500 active:scale-95 text-white font-medium text-sm rounded-xl cursor-pointer shadow-lg shadow-blue-600/20 transition">
-                  <Plus className="h-4 w-4" /> Upload File
-                  <input 
-                    type="file" 
-                    className="hidden" 
-                    onChange={(e) => {
-                      setMobileMenuOpen(false);
-                      handleFileUpload(e);
-                    }} 
-                  />
-                </label>
+                <button
+                  onClick={() => {
+                    setMobileMenuOpen(false);
+                    setUploadModalOpen(true);
+                  }}
+                  className="flex items-center justify-center gap-2 w-full py-2.5 px-4 bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-500 hover:from-blue-500 hover:to-indigo-500 active:scale-95 text-white font-semibold text-sm rounded-xl cursor-pointer shadow-lg shadow-blue-600/25 transition"
+                >
+                  <UploadCloud className="h-4 w-4" /> Upload Items
+                </button>
                 <button
                   onClick={() => {
                     setMobileMenuOpen(false);
@@ -1516,6 +1846,337 @@ export default function UserCloudPortal() {
               </button>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* Hidden File and Folder Inputs */}
+      <input 
+        ref={multiFileInputRef} 
+        type="file" 
+        multiple 
+        className="hidden" 
+        onChange={handleFilesSelected} 
+      />
+      <input 
+        ref={folderInputRef} 
+        type="file" 
+        {...({ webkitdirectory: '', directory: '', multiple: true } as any)} 
+        className="hidden" 
+        onChange={handleFolderSelected} 
+      />
+
+      {/* Upload Selection Modal */}
+      {uploadModalOpen && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-md z-50 flex items-center justify-center p-4">
+          <div className="bg-[#111827] border border-slate-700/80 rounded-3xl max-w-md w-full p-6 shadow-2xl relative overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+            {/* Ambient subtle glow */}
+            <div className="absolute top-0 right-0 w-48 h-48 bg-blue-500/10 rounded-full blur-3xl pointer-events-none" />
+            <div className="absolute bottom-0 left-0 w-48 h-48 bg-indigo-500/10 rounded-full blur-3xl pointer-events-none" />
+
+            {/* Header */}
+            <div className="flex items-center justify-between pb-4 border-b border-slate-800">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 rounded-2xl bg-blue-600/20 border border-blue-500/30 text-blue-400">
+                  <UploadCloud className="h-6 w-6" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-lg text-white">Upload to CloudNAS</h3>
+                  <p className="text-xs text-slate-400 truncate max-w-[240px]">
+                    Target: {selectedDisk?.name || 'Storage'} {getFolderPath()}
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setUploadModalOpen(false)}
+                className="p-1.5 text-slate-400 hover:text-white rounded-xl bg-slate-800/80 hover:bg-slate-700 transition"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            {/* Selection Options */}
+            <div className="space-y-3.5 my-6">
+              {/* Option 1: Multi Files */}
+              <button
+                onClick={() => {
+                  setUploadModalOpen(false);
+                  multiFileInputRef.current?.click();
+                }}
+                className="group flex items-start gap-4 p-4 rounded-2xl bg-slate-900/90 hover:bg-blue-950/40 border border-slate-800 hover:border-blue-500/50 transition-all text-left w-full hover:shadow-lg hover:shadow-blue-500/10"
+              >
+                <div className="p-3 rounded-xl bg-blue-600/20 text-blue-400 group-hover:bg-blue-600 group-hover:text-white transition shrink-0">
+                  <FileUp className="h-6 w-6" />
+                </div>
+                <div className="flex-1">
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-sm text-white group-hover:text-blue-200 transition">
+                      Upload Files
+                    </span>
+                    <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-300 border border-blue-500/30">
+                      Multi-select
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-400 mt-1">
+                    Select single or multiple photos, videos, documents, or archives from your device.
+                  </p>
+                </div>
+              </button>
+
+              {/* Option 2: Folder Upload */}
+              <button
+                onClick={() => {
+                  setUploadModalOpen(false);
+                  folderInputRef.current?.click();
+                }}
+                className="group flex items-start gap-4 p-4 rounded-2xl bg-slate-900/90 hover:bg-indigo-950/40 border border-slate-800 hover:border-indigo-500/50 transition-all text-left w-full hover:shadow-lg hover:shadow-indigo-500/10"
+              >
+                <div className="p-3 rounded-xl bg-indigo-600/20 text-indigo-400 group-hover:bg-indigo-600 group-hover:text-white transition shrink-0">
+                  <FolderUp className="h-6 w-6" />
+                </div>
+                <div className="flex-1">
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-sm text-white group-hover:text-indigo-200 transition">
+                      Upload Entire Folder
+                    </span>
+                    <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
+                      Directory Tree
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-400 mt-1">
+                    Upload an entire directory with all subfolders and files preserved in their original hierarchy.
+                  </p>
+                </div>
+              </button>
+            </div>
+
+            {/* Drag & Drop Hint */}
+            <div className="p-3 rounded-2xl bg-slate-900/60 border border-slate-800/80 text-center flex items-center justify-center gap-2 text-xs text-slate-400">
+              <Sparkles className="h-3.5 w-3.5 text-amber-400 shrink-0" />
+              <span>Drag & drop files or folders anywhere onto the window</span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Full Window Drag and Drop Overlay */}
+      {isDragOver && (
+        <div 
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+          className="fixed inset-0 z-50 bg-[#080d1a]/90 backdrop-blur-xl flex flex-col items-center justify-center p-6 border-4 border-dashed border-blue-500/80 animate-pulse-slow"
+        >
+          <div className="relative mb-6">
+            <div className="w-28 h-28 rounded-full bg-blue-600/20 border-2 border-blue-500 flex items-center justify-center text-blue-400 shadow-2xl shadow-blue-500/50">
+              <UploadCloud className="h-14 w-14 animate-bounce" />
+            </div>
+            <div className="absolute inset-0 rounded-full border border-blue-400/40 animate-ping pointer-events-none" />
+          </div>
+
+          <h2 className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight mb-2 text-center">
+            Drop Files or Folders Here
+          </h2>
+          <p className="text-sm sm:text-base text-blue-200 max-w-md text-center mb-6">
+            Release to instantly start uploading to <span className="font-semibold text-white">{selectedDisk?.name || 'CloudNAS'}</span> ({getFolderPath()})
+          </p>
+
+          <div className="flex items-center gap-3 flex-wrap justify-center text-xs font-semibold text-slate-300">
+            <span className="px-3 py-1 rounded-full bg-blue-900/60 border border-blue-700/60 flex items-center gap-1.5">
+              <Layers className="h-3.5 w-3.5 text-blue-400" /> Multi-file Upload
+            </span>
+            <span className="px-3 py-1 rounded-full bg-indigo-900/60 border border-indigo-700/60 flex items-center gap-1.5">
+              <FolderUp className="h-3.5 w-3.5 text-indigo-400" /> Recursive Folder Trees
+            </span>
+            <span className="px-3 py-1 rounded-full bg-emerald-900/60 border border-emerald-700/60 flex items-center gap-1.5">
+              <Zap className="h-3.5 w-3.5 text-emerald-400" /> Real-time Progress
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* Floating Upload Manager Widget */}
+      {uploadManagerOpen && (
+        <div className={`fixed z-50 transition-all duration-300 ${
+          uploadManagerMinimized 
+            ? 'bottom-20 md:bottom-6 right-4 sm:right-6 w-auto max-w-[92vw]'
+            : 'bottom-20 md:bottom-6 right-3 sm:right-6 w-[94vw] sm:w-[440px] max-w-lg'
+        }`}>
+          {uploadManagerMinimized ? (
+            /* Minimized Pill */
+            <div 
+              onClick={() => setUploadManagerMinimized(false)}
+              className="flex items-center gap-3 px-4 py-2.5 bg-[#0e1628]/95 backdrop-blur-xl border border-blue-500/50 rounded-2xl shadow-2xl shadow-blue-500/20 cursor-pointer hover:border-blue-400 transition"
+            >
+              <div className={`p-1.5 rounded-xl ${allUploadsFinished ? 'bg-emerald-500/20 text-emerald-400' : 'bg-blue-600 text-white animate-pulse'}`}>
+                {allUploadsFinished ? <CheckCircle2 className="h-4 w-4" /> : <UploadCloud className="h-4 w-4" />}
+              </div>
+              <div className="flex flex-col text-left">
+                <span className="text-xs font-bold text-white">
+                  {allUploadsFinished ? 'Uploads Completed' : `Uploading (${completedUploadsCount}/${uploadQueue.length})`}
+                </span>
+                <span className="text-[10px] text-slate-400 font-mono">
+                  {allUploadsFinished ? `${uploadQueue.length} items ready` : `${overallUploadPercent}% • ${currentSpeedStr}`}
+                </span>
+              </div>
+              <div className="flex items-center gap-1 ml-2 text-slate-400">
+                <button 
+                  onClick={(e) => { e.stopPropagation(); setUploadManagerMinimized(false); }}
+                  className="p-1 hover:text-white"
+                  title="Expand"
+                >
+                  <ChevronUp className="h-4 w-4" />
+                </button>
+                <button 
+                  onClick={(e) => { e.stopPropagation(); setUploadManagerOpen(false); }}
+                  className="p-1 hover:text-rose-400"
+                  title="Close"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+            </div>
+          ) : (
+            /* Expanded Card */
+            <div className="bg-[#0e1628]/95 backdrop-blur-2xl border border-slate-700/80 rounded-2xl shadow-2xl shadow-black/80 overflow-hidden flex flex-col">
+              {/* Card Header */}
+              <div className="p-4 bg-slate-900/80 border-b border-slate-800/80 flex items-center justify-between">
+                <div className="flex items-center gap-2.5">
+                  <div className={`p-2 rounded-xl ${
+                    allUploadsFinished 
+                      ? 'bg-emerald-500/20 text-emerald-400' 
+                      : 'bg-gradient-to-tr from-blue-600 to-indigo-600 text-white shadow-md shadow-blue-500/30'
+                  }`}>
+                    {allUploadsFinished ? <CheckCircle2 className="h-5 w-5" /> : <UploadCloud className="h-5 w-5 animate-pulse" />}
+                  </div>
+                  <div>
+                    <h4 className="font-bold text-sm text-white flex items-center gap-1.5">
+                      {allUploadsFinished ? 'All Uploads Completed!' : 'Uploading to CloudNAS'}
+                    </h4>
+                    <p className="text-[11px] text-slate-400 font-mono">
+                      {completedUploadsCount} of {uploadQueue.length} files ({formatBytes(totalLoadedBytes)} / {formatBytes(totalQueueBytes)})
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-1.5">
+                  {!allUploadsFinished && currentSpeedStr && (
+                    <span className="px-2 py-0.5 rounded-full bg-blue-500/15 border border-blue-500/30 text-[10px] font-mono text-blue-300 flex items-center gap-1">
+                      <Zap className="h-3 w-3 text-amber-300" /> {currentSpeedStr}
+                    </span>
+                  )}
+                  <button 
+                    onClick={() => setUploadManagerMinimized(true)}
+                    className="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition"
+                    title="Minimize"
+                  >
+                    <ChevronDown className="h-4 w-4" />
+                  </button>
+                  <button 
+                    onClick={() => setUploadManagerOpen(false)}
+                    className="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition"
+                    title="Close"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+              </div>
+
+              {/* Real-time Glowing Progress Bar */}
+              <div className="h-1.5 w-full bg-slate-800 overflow-hidden relative">
+                <div 
+                  className={`h-full transition-all duration-300 relative overflow-hidden ${
+                    allUploadsFinished 
+                      ? 'bg-gradient-to-r from-emerald-500 to-teal-400' 
+                      : 'bg-gradient-to-r from-blue-500 via-indigo-500 to-cyan-400'
+                  }`}
+                  style={{ width: `${overallUploadPercent}%` }}
+                >
+                  {!allUploadsFinished && (
+                    <div className="absolute inset-0 bg-white/25 animate-shimmer" />
+                  )}
+                </div>
+              </div>
+
+              {/* Queue Items List */}
+              <div className="max-h-60 sm:max-h-68 overflow-y-auto divide-y divide-slate-800/60 p-2 space-y-1">
+                {uploadQueue.map((item) => (
+                  <div key={item.id} className="p-2.5 rounded-xl bg-slate-900/40 hover:bg-slate-900/80 transition space-y-1.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2 overflow-hidden">
+                        {getFileBadgeIcon(item.name)}
+                        <div className="overflow-hidden text-left">
+                          <p className="text-xs font-semibold text-slate-200 truncate max-w-[220px] sm:max-w-[260px]">
+                            {item.name}
+                          </p>
+                          {item.relativePath && (
+                            <p className="text-[10px] text-slate-400 truncate max-w-[220px] sm:max-w-[260px]">
+                              📁 {item.relativePath}
+                            </p>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2 shrink-0">
+                        <span className="text-[10px] text-slate-400 font-mono">
+                          {item.sizeFormatted}
+                        </span>
+
+                        {item.status === 'completed' && (
+                          <span className="flex items-center gap-1 text-[10px] font-semibold text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-full border border-emerald-500/20">
+                            <Check className="h-3 w-3" /> Done
+                          </span>
+                        )}
+                        {item.status === 'uploading' && (
+                          <span className="text-[10px] font-mono font-bold text-blue-400 bg-blue-500/10 px-2 py-0.5 rounded-full border border-blue-500/20">
+                            {item.progress}%
+                          </span>
+                        )}
+                        {item.status === 'queued' && (
+                          <span className="text-[10px] text-slate-400 bg-slate-800 px-2 py-0.5 rounded-full">
+                            Queued
+                          </span>
+                        )}
+                        {item.status === 'error' && (
+                          <span className="text-[10px] font-semibold text-rose-400 bg-rose-500/10 px-2 py-0.5 rounded-full border border-rose-500/20" title={item.error}>
+                            Failed
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Individual Progress Bar */}
+                    {item.status === 'uploading' && (
+                      <div className="h-1 w-full bg-slate-800 rounded-full overflow-hidden relative">
+                        <div 
+                          className="h-full bg-blue-500 transition-all duration-200 relative overflow-hidden"
+                          style={{ width: `${item.progress}%` }}
+                        >
+                          <div className="absolute inset-0 bg-white/30 animate-shimmer" />
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+
+              {/* Card Footer */}
+              <div className="p-3 bg-slate-900/90 border-t border-slate-800 flex items-center justify-between text-xs">
+                <span className="text-slate-400">
+                  {allUploadsFinished ? 'All transfers finished' : `${uploadQueue.filter(i => i.status === 'queued').length} items remaining`}
+                </span>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => {
+                      setUploadQueue(prev => prev.filter(i => i.status !== 'completed'));
+                      if (allUploadsFinished) setUploadManagerOpen(false);
+                    }}
+                    className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium transition"
+                  >
+                    {allUploadsFinished ? 'Clear & Close' : 'Clear Completed'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>

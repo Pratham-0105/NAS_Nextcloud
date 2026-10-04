@@ -241,8 +241,15 @@ router.post('/upload', upload.single('file'), async (req: Request, res: Response
     return;
   }
 
-  const targetFolder = (req.body.path as string) || '/';
-  const fileName = req.file.originalname;
+  let targetFolder = (req.body.path as string) || '/';
+  let fileName = req.file.originalname;
+  if (req.body.relativePath && typeof req.body.relativePath === 'string') {
+    const relDir = path.posix.dirname(req.body.relativePath);
+    if (relDir && relDir !== '.') {
+      targetFolder = path.posix.join(targetFolder, relDir);
+    }
+    fileName = path.posix.basename(req.body.relativePath);
+  }
   const mount = liveStatus.mountPoint;
 
   try {
