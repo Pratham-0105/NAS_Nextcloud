@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { 
   Folder, 
   FileText, 
@@ -93,7 +93,8 @@ export default function UserCloudPortal() {
 
   // Advanced Upload Engine & Queue State
   const [uploadQueue, setUploadQueue] = useState<UploadQueueItem[]>([]);
-  const [isUploading, setIsUploading] = useState(false);
+  const activeUploadsRef = useRef<Set<string>>(new Set());
+  const lastRefreshTimeRef = useRef<number>(0);
   const [uploadManagerOpen, setUploadManagerOpen] = useState(false);
   const [uploadManagerMinimized, setUploadManagerMinimized] = useState(false);
   const [uploadModalOpen, setUploadModalOpen] = useState(false);
@@ -322,7 +323,7 @@ export default function UserCloudPortal() {
     return `${parseFloat((bytes / Math.pow(k, i)).toFixed(dm))} ${sizes[i]}`;
   };
 
-  // Enqueue Files & Folders for Upload
+  // Enqueue Files & Folders for Upload (with smart filter for node_modules / build cache)
   const enqueueFiles = useCallback((itemsList: { file: File; relativePath?: string }[]) => {
     if (!itemsList || itemsList.length === 0) return;
 
@@ -331,7 +332,33 @@ export default function UserCloudPortal() {
       return;
     }
 
-    const newItems: UploadQueueItem[] = itemsList.map(({ file, relativePath }) => ({
+    // Smart Filter: Filter out development build artifacts, dependency directories, and OS hidden metadata
+    // In node/react/vite projects, node_modules alone contains 15,000 to 30,000 files that freeze uploads
+    let skippedCount = 0;
+    const filteredList = itemsList.filter(({ file, relativePath }) => {
+      const rel = (relativePath || (file as any).webkitRelativePath || file.name || '').toLowerCase();
+      const isJunk = 
+        rel.includes('/node_modules/') || rel.startsWith('node_modules/') ||
+        rel.includes('/.git/') || rel.startsWith('.git/') ||
+        rel.includes('/.next/') || rel.startsWith('.next/') ||
+        rel.includes('/.turbo/') || rel.startsWith('.turbo/') ||
+        rel.includes('/__pycache__/') || rel.startsWith('__pycache__/') ||
+        rel.endsWith('.ds_store') || rel.endsWith('thumbs.db');
+      
+      if (isJunk) {
+        skippedCount++;
+        return false;
+      }
+      return true;
+    });
+
+    if (skippedCount > 0) {
+      alert(`⚡ Project folder optimized: ${skippedCount.toLocaleString()} dependency & cache files (node_modules, .git, etc.) were automatically skipped. Queuing ${filteredList.length.toLocaleString()} project files for high-speed upload.`);
+    }
+
+    if (filteredList.length === 0) return;
+
+    const newItems: UploadQueueItem[] = filteredList.map(({ file, relativePath }) => ({
       id: `${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
       name: file.name,
       relativePath: relativePath || (file as any).webkitRelativePath || '',
@@ -348,103 +375,103 @@ export default function UserCloudPortal() {
     setUploadManagerMinimized(false);
   }, [diskInfo]);
 
-  // Queue Processor Engine using XMLHttpRequest for byte-level accuracy & live speeds
+  // Queue Processor Engine with 4x Parallel Streams & Throttled Sync
+  const MAX_CONCURRENT_UPLOADS = 4;
   useEffect(() => {
-    if (isUploading) return;
-    const nextItem = uploadQueue.find(item => item.status === 'queued');
-    if (!nextItem) return;
+    const queuedItems = uploadQueue.filter(item => item.status === 'queued' && !activeUploadsRef.current.has(item.id));
+    if (queuedItems.length === 0) return;
 
-    const processUpload = async (item: UploadQueueItem) => {
-      setIsUploading(true);
-      setUploadQueue(prev => prev.map(q => q.id === item.id ? { ...q, status: 'uploading' } : q));
+    const availableSlots = MAX_CONCURRENT_UPLOADS - activeUploadsRef.current.size;
+    if (availableSlots <= 0) return;
+
+    const itemsToStart = queuedItems.slice(0, availableSlots);
+
+    itemsToStart.forEach(item => {
+      activeUploadsRef.current.add(item.id);
 
       const username = currentUser?.nextcloudUser || currentUser?.id || 'clouduser';
       const apiUrl = process.env.NEXT_PUBLIC_USER_API_URL || '/api';
       const folderPath = getFolderPath();
 
-      await new Promise<void>((resolve) => {
-        const xhr = new XMLHttpRequest();
-        xhr.open('POST', `${apiUrl}/files/upload?user=${encodeURIComponent(username)}`);
+      setUploadQueue(prev => prev.map(q => q.id === item.id ? { ...q, status: 'uploading' } : q));
 
-        let lastLoaded = 0;
-        let lastTime = Date.now();
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', `${apiUrl}/files/upload?user=${encodeURIComponent(username)}`);
 
-        xhr.upload.onprogress = (e) => {
-          if (e.lengthComputable) {
-            const percent = Math.min(99, Math.round((e.loaded / e.total) * 100));
-            const now = Date.now();
-            const elapsedSec = (now - lastTime) / 1000;
-            if (elapsedSec >= 0.2) {
-              const bytesDiff = e.loaded - lastLoaded;
-              const bps = bytesDiff / elapsedSec;
-              const speed = bps > 1024 * 1024
-                ? `${(bps / (1024 * 1024)).toFixed(1)} MB/s`
-                : `${(bps / 1024).toFixed(0)} KB/s`;
-              const remainingBytes = Math.max(0, e.total - e.loaded);
-              const etaSec = bps > 0 ? Math.ceil(remainingBytes / bps) : 0;
-              const eta = etaSec > 60 ? `${Math.ceil(etaSec / 60)}m` : `${etaSec}s`;
+      let lastLoaded = 0;
+      let lastTime = Date.now();
 
-              setCurrentSpeedStr(speed);
-              setUploadEtaStr(eta);
-              lastLoaded = e.loaded;
-              lastTime = now;
-            }
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) {
+          const percent = Math.min(99, Math.round((e.loaded / e.total) * 100));
+          const now = Date.now();
+          const elapsedSec = (now - lastTime) / 1000;
+          if (elapsedSec >= 0.25) {
+            const bytesDiff = e.loaded - lastLoaded;
+            const bps = bytesDiff / elapsedSec;
+            const speed = bps > 1024 * 1024
+              ? `${(bps / (1024 * 1024)).toFixed(1)} MB/s`
+              : `${(bps / 1024).toFixed(0)} KB/s`;
 
-            setUploadQueue(prev => prev.map(q => q.id === item.id ? {
-              ...q,
-              progress: percent,
-              loadedBytes: e.loaded,
-            } : q));
+            setCurrentSpeedStr(speed);
+            lastLoaded = e.loaded;
+            lastTime = now;
           }
-        };
 
-        xhr.onload = () => {
-          if (xhr.status >= 200 && xhr.status < 300) {
-            setUploadQueue(prev => prev.map(q => q.id === item.id ? {
-              ...q,
-              progress: 100,
-              loadedBytes: q.size,
-              status: 'completed',
-            } : q));
-            fetchCloudFiles(true);
-          } else {
-            let errText = 'Upload failed';
-            try {
-              const parsed = JSON.parse(xhr.responseText);
-              errText = parsed.error || errText;
-            } catch {}
-            setUploadQueue(prev => prev.map(q => q.id === item.id ? {
-              ...q,
-              status: 'error',
-              error: errText,
-            } : q));
-          }
-          resolve();
-        };
-
-        xhr.onerror = () => {
           setUploadQueue(prev => prev.map(q => q.id === item.id ? {
             ...q,
-            status: 'error',
-            error: 'Network connection error',
+            progress: percent,
+            loadedBytes: e.loaded,
           } : q));
-          resolve();
-        };
-
-        const formData = new FormData();
-        formData.append('file', item.file);
-        formData.append('path', folderPath);
-        if (item.relativePath) {
-          formData.append('relativePath', item.relativePath);
         }
-        xhr.send(formData);
-      });
+      };
 
-      setIsUploading(false);
-    };
+      xhr.onload = () => {
+        activeUploadsRef.current.delete(item.id);
+        const isSuccess = xhr.status >= 200 && xhr.status < 300;
 
-    processUpload(nextItem);
-  }, [uploadQueue, isUploading, currentUser, getFolderPath, fetchCloudFiles]);
+        let errText = 'Upload failed';
+        if (!isSuccess) {
+          try {
+            const parsed = JSON.parse(xhr.responseText);
+            errText = parsed.error || errText;
+          } catch {}
+        }
+
+        setUploadQueue(prev => prev.map(q => q.id === item.id ? {
+          ...q,
+          progress: isSuccess ? 100 : q.progress,
+          loadedBytes: isSuccess ? q.size : q.loadedBytes,
+          status: isSuccess ? 'completed' : 'error',
+          error: isSuccess ? undefined : errText,
+        } : q));
+
+        // Throttle file list refresh (at most once every 4s while uploading)
+        const now = Date.now();
+        if (now - lastRefreshTimeRef.current > 4000) {
+          lastRefreshTimeRef.current = now;
+          fetchCloudFiles(true);
+        }
+      };
+
+      xhr.onerror = () => {
+        activeUploadsRef.current.delete(item.id);
+        setUploadQueue(prev => prev.map(q => q.id === item.id ? {
+          ...q,
+          status: 'error',
+          error: 'Network connection error',
+        } : q));
+      };
+
+      const formData = new FormData();
+      formData.append('file', item.file);
+      formData.append('path', folderPath);
+      if (item.relativePath) {
+        formData.append('relativePath', item.relativePath);
+      }
+      xhr.send(formData);
+    });
+  }, [uploadQueue, currentUser, getFolderPath, fetchCloudFiles]);
 
   // Derived Real-Time Batch Metrics
   const totalQueueBytes = uploadQueue.reduce((acc, it) => acc + it.size, 0);
@@ -454,6 +481,25 @@ export default function UserCloudPortal() {
   const errorUploadsCount = uploadQueue.filter(it => it.status === 'error').length;
   const activeUploadItem = uploadQueue.find(it => it.status === 'uploading');
   const allUploadsFinished = uploadQueue.length > 0 && !uploadQueue.some(it => it.status === 'queued' || it.status === 'uploading');
+
+  const prevAllFinishedRef = useRef(false);
+  useEffect(() => {
+    if (allUploadsFinished && !prevAllFinishedRef.current) {
+      fetchCloudFiles();
+    }
+    prevAllFinishedRef.current = allUploadsFinished;
+  }, [allUploadsFinished, fetchCloudFiles]);
+
+  const visibleQueueItems = useMemo(() => {
+    if (uploadQueue.length <= 40) return uploadQueue;
+    const active = uploadQueue.filter(i => i.status === 'uploading');
+    const errors = uploadQueue.filter(i => i.status === 'error');
+    const queued = uploadQueue.filter(i => i.status === 'queued').slice(0, 15);
+    const completed = uploadQueue.filter(i => i.status === 'completed').slice(-10);
+    const map = new Map<string, UploadQueueItem>();
+    [...active, ...errors, ...queued, ...completed].forEach(i => map.set(i.id, i));
+    return Array.from(map.values());
+  }, [uploadQueue]);
 
   // Input Selection Handlers
   const handleFilesSelected = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -2306,9 +2352,9 @@ export default function UserCloudPortal() {
                 </div>
               </div>
 
-              {/* Queue Items List */}
+              {/* Queue Items List (Windowed for 10,000+ files performance) */}
               <div className="max-h-60 sm:max-h-68 overflow-y-auto divide-y divide-slate-800/60 p-2 space-y-1">
-                {uploadQueue.map((item) => (
+                {visibleQueueItems.map((item) => (
                   <div key={item.id} className="p-2.5 rounded-xl bg-slate-900/40 hover:bg-slate-900/80 transition space-y-1.5">
                     <div className="flex items-center justify-between gap-2">
                       <div className="flex items-center gap-2 overflow-hidden">
@@ -2366,14 +2412,31 @@ export default function UserCloudPortal() {
                     )}
                   </div>
                 ))}
+
+                {uploadQueue.length > visibleQueueItems.length && (
+                  <div className="text-center py-1.5 text-[11px] text-slate-400 font-medium bg-slate-800/30 rounded-lg">
+                    + {(uploadQueue.length - visibleQueueItems.length).toLocaleString()} more files processing in parallel queue
+                  </div>
+                )}
               </div>
 
               {/* Card Footer */}
               <div className="p-3 bg-slate-900/90 border-t border-slate-800 flex items-center justify-between text-xs">
                 <span className="text-slate-400">
-                  {allUploadsFinished ? 'All transfers finished' : `${uploadQueue.filter(i => i.status === 'queued').length} items remaining`}
+                  {allUploadsFinished ? 'All transfers finished' : `${uploadQueue.filter(i => i.status === 'queued').length.toLocaleString()} items remaining`}
                 </span>
                 <div className="flex items-center gap-2">
+                  {uploadQueue.some(i => i.status === 'queued') && (
+                    <button
+                      onClick={() => {
+                        setUploadQueue(prev => prev.filter(i => i.status !== 'queued'));
+                      }}
+                      className="px-2.5 py-1.5 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 text-xs font-medium border border-rose-500/20 transition"
+                      title="Cancel remaining queued files"
+                    >
+                      Cancel Remaining
+                    </button>
+                  )}
                   <button
                     onClick={() => {
                       setUploadQueue(prev => prev.filter(i => i.status !== 'completed'));
