@@ -104,6 +104,12 @@ export default function UserCloudPortal() {
   const multiFileInputRef = useRef<HTMLInputElement | null>(null);
   const folderInputRef = useRef<HTMLInputElement | null>(null);
 
+  // Multi-File Selection & Bulk Deletion State
+  const [selectedFilePaths, setSelectedFilePaths] = useState<string[]>([]);
+  const [isBatchDeleting, setIsBatchDeleting] = useState(false);
+  const [showBatchDeleteModal, setShowBatchDeleteModal] = useState(false);
+
+
 
   // Real Physical Disk & Quota State
   const [quota, setQuota] = useState<{ usedStr: string; totalStr: string; freeStr: string; percent: number }>({
@@ -632,11 +638,72 @@ export default function UserCloudPortal() {
   };
 
   const navigateIntoFolder = (folderName: string) => {
+    setSelectedFilePaths([]);
     setCurrentFolder(prev => [...prev, folderName]);
   };
 
   const navigateBack = (index: number) => {
+    setSelectedFilePaths([]);
     setCurrentFolder(prev => prev.slice(0, index + 1));
+  };
+
+  // Multi-File Selection & Bulk Actions
+  const toggleSelectFile = (filePath: string, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    setSelectedFilePaths(prev => 
+      prev.includes(filePath) ? prev.filter(p => p !== filePath) : [...prev, filePath]
+    );
+  };
+
+  const toggleSelectAll = () => {
+    const currentList = activeTab === 'photos' ? photos : filteredFiles;
+    const allPaths = currentList.map(f => f.path);
+    const allSelected = allPaths.length > 0 && allPaths.every(p => selectedFilePaths.includes(p));
+
+    if (allSelected) {
+      setSelectedFilePaths([]);
+    } else {
+      setSelectedFilePaths(allPaths);
+    }
+  };
+
+  const clearSelection = () => {
+    setSelectedFilePaths([]);
+  };
+
+  const handleBatchDelete = async () => {
+    if (selectedFilePaths.length === 0) return;
+
+    // Hardware Safety Guard: prevent delete when drive is disconnected / ejected
+    if (diskInfo && (diskInfo.isConnected === false || diskInfo.status === 'DISCONNECTED')) {
+      alert('⚠️ Cannot delete files: The physical CloudNAS storage drive is disconnected or ejected.');
+      return;
+    }
+
+    setIsBatchDeleting(true);
+    const username = currentUser?.nextcloudUser || currentUser?.id || 'clouduser';
+    const apiUrl = process.env.NEXT_PUBLIC_USER_API_URL || '/api';
+
+    try {
+      const res = await fetch(`${apiUrl}/files/delete?user=${encodeURIComponent(username)}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json', 'x-user-id': username },
+        body: JSON.stringify({ paths: selectedFilePaths }),
+      });
+
+      if (res.ok) {
+        setSelectedFilePaths([]);
+        setShowBatchDeleteModal(false);
+        fetchCloudFiles();
+      } else {
+        const errData = await res.json().catch(() => null);
+        alert(errData?.error || 'Failed to delete selected items');
+      }
+    } catch (err: any) {
+      alert(`Deletion error: ${err.message || 'Network request failed'}`);
+    } finally {
+      setIsBatchDeleting(false);
+    }
   };
 
   const filteredFiles = files.filter(f => 
@@ -1219,17 +1286,41 @@ export default function UserCloudPortal() {
                   )}
                 </div>
 
-                {/* Switch Drive / Back button if a disk is selected */}
+                {/* Switch Drive / Back button & Select All if a disk is selected */}
                 {selectedDisk && (
-                  <button
-                    onClick={() => {
-                      setSelectedDisk(null);
-                      setCurrentFolder(['']);
-                    }}
-                    className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium border border-slate-700 flex items-center gap-1 transition"
-                  >
-                    <span>← All Drives</span>
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => {
+                        setSelectedDisk(null);
+                        setCurrentFolder(['']);
+                        setSelectedFilePaths([]);
+                      }}
+                      className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium border border-slate-700 flex items-center gap-1 transition"
+                    >
+                      <span>← All Drives</span>
+                    </button>
+
+                    {filteredFiles.length > 0 && (
+                      <button
+                        onClick={toggleSelectAll}
+                        className={`px-2.5 py-1 rounded-lg text-xs font-medium border flex items-center gap-1.5 transition ${
+                          selectedFilePaths.length > 0
+                            ? 'bg-blue-600/20 border-blue-500/50 text-blue-300'
+                            : 'bg-slate-800/80 hover:bg-slate-700 border-slate-700 text-slate-300'
+                        }`}
+                        title="Toggle Multi-Select for All Files"
+                      >
+                        <Check className={`h-3 w-3 stroke-[2.5] ${selectedFilePaths.length > 0 ? 'text-blue-400' : 'text-slate-400'}`} />
+                        <span>
+                          {selectedFilePaths.length === filteredFiles.length && filteredFiles.length > 0
+                            ? 'Deselect All'
+                            : selectedFilePaths.length > 0
+                              ? `Selected (${selectedFilePaths.length})`
+                              : 'Select All'}
+                        </span>
+                      </button>
+                    )}
+                  </div>
                 )}
 
                 {/* Mobile Quick Action Buttons on top right (when inside a disk) */}
@@ -1406,66 +1497,118 @@ export default function UserCloudPortal() {
 
                   {viewMode === 'grid' ? (
                     <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3 sm:gap-4">
-                      {filteredFiles.map((file) => (
-                        <div
-                          key={file.name}
-                          onClick={() => file.type === 'folder' ? navigateIntoFolder(file.name) : setPreviewFile(file)}
-                          className="bg-[#131b2e] hover:bg-[#1a253f] border border-slate-800 rounded-2xl p-3 sm:p-4 flex flex-col justify-between cursor-pointer transition group shadow-sm relative active:scale-[0.98]"
-                        >
-                          <div className="aspect-square rounded-xl bg-slate-900/60 flex items-center justify-center mb-2.5 sm:mb-3 overflow-hidden">
-                            {file.type === 'folder' && <Folder className="h-10 w-10 sm:h-12 sm:w-12 text-blue-400 fill-blue-500/20" />}
-                            {file.type === 'image' && file.url && (
-                              <img src={file.url} alt={file.name} className="h-full w-full object-cover group-hover:scale-105 transition" />
-                            )}
-                            {file.type === 'document' && <FileText className="h-8 w-8 sm:h-10 sm:w-10 text-emerald-400" />}
-                            {file.type === 'video' && <Film className="h-8 w-8 sm:h-10 sm:w-10 text-purple-400" />}
-                          </div>
-                          <div>
-                            <div className="text-xs font-semibold text-slate-200 truncate group-hover:text-blue-400 transition">{file.name}</div>
-                            <div className="text-[11px] text-slate-500 mt-1 flex justify-between items-center">
-                              <span>{file.size}</span>
-                              <div className="opacity-90 sm:opacity-0 sm:group-hover:opacity-100 transition flex items-center gap-1">
-                                {file.type !== 'folder' && (
-                                  <button onClick={(e) => handleDownload(file.path, e)} title="Download" className="p-1 hover:text-white text-slate-300">
-                                    <Download className="h-3.5 w-3.5" />
+                      {filteredFiles.map((file) => {
+                        const isSelected = selectedFilePaths.includes(file.path);
+                        return (
+                          <div
+                            key={file.path || file.name}
+                            onClick={() => {
+                              if (selectedFilePaths.length > 0) {
+                                toggleSelectFile(file.path);
+                              } else {
+                                file.type === 'folder' ? navigateIntoFolder(file.name) : setPreviewFile(file);
+                              }
+                            }}
+                            className={`border rounded-2xl p-3 sm:p-4 flex flex-col justify-between cursor-pointer transition group shadow-sm relative active:scale-[0.98] ${
+                              isSelected
+                                ? 'bg-blue-950/40 border-blue-500 ring-2 ring-blue-500/50 shadow-lg shadow-blue-500/15'
+                                : 'bg-[#131b2e] hover:bg-[#1a253f] border-slate-800'
+                            }`}
+                          >
+                            {/* Multi-Select Checkbox */}
+                            <button
+                              onClick={(e) => toggleSelectFile(file.path, e)}
+                              className={`absolute top-2.5 left-2.5 z-10 h-6 w-6 rounded-lg flex items-center justify-center transition-all ${
+                                isSelected
+                                  ? 'bg-blue-600 border-2 border-blue-400 text-white shadow-md shadow-blue-500/40 scale-100 opacity-100'
+                                  : selectedFilePaths.length > 0
+                                    ? 'bg-black/60 border-2 border-slate-600 text-transparent opacity-90 hover:border-blue-400'
+                                    : 'bg-black/50 border-2 border-slate-700/80 text-transparent opacity-0 group-hover:opacity-100 hover:border-blue-400'
+                              }`}
+                              title={isSelected ? 'Deselect item' : 'Select item'}
+                            >
+                              <Check className={`h-3.5 w-3.5 stroke-[3] ${isSelected ? 'block' : 'opacity-0'}`} />
+                            </button>
+
+                            <div className="aspect-square rounded-xl bg-slate-900/60 flex items-center justify-center mb-2.5 sm:mb-3 overflow-hidden">
+                              {file.type === 'folder' && <Folder className="h-10 w-10 sm:h-12 sm:w-12 text-blue-400 fill-blue-500/20" />}
+                              {file.type === 'image' && file.url && (
+                                <img src={file.url} alt={file.name} className="h-full w-full object-cover group-hover:scale-105 transition" />
+                              )}
+                              {file.type === 'document' && <FileText className="h-8 w-8 sm:h-10 sm:w-10 text-emerald-400" />}
+                              {file.type === 'video' && <Film className="h-8 w-8 sm:h-10 sm:w-10 text-purple-400" />}
+                            </div>
+                            <div>
+                              <div className="text-xs font-semibold text-slate-200 truncate group-hover:text-blue-400 transition">{file.name}</div>
+                              <div className="text-[11px] text-slate-500 mt-1 flex justify-between items-center">
+                                <span>{file.size}</span>
+                                <div className="opacity-90 sm:opacity-0 sm:group-hover:opacity-100 transition flex items-center gap-1">
+                                  {file.type !== 'folder' && (
+                                    <button onClick={(e) => handleDownload(file.path, e)} title="Download" className="p-1 hover:text-white text-slate-300">
+                                      <Download className="h-3.5 w-3.5" />
+                                    </button>
+                                  )}
+                                  <button onClick={(e) => handleDeleteFile(file.path, e)} title="Delete" className="p-1 text-rose-400 hover:text-rose-300">
+                                    <Trash2 className="h-3.5 w-3.5" />
                                   </button>
-                                )}
-                                <button onClick={(e) => handleDeleteFile(file.path, e)} title="Delete" className="p-1 text-rose-400 hover:text-rose-300">
-                                  <Trash2 className="h-3.5 w-3.5" />
-                                </button>
+                                </div>
                               </div>
                             </div>
                           </div>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   ) : (
                     <div className="bg-[#131b2e] border border-slate-800 rounded-2xl overflow-hidden">
                       <div className="divide-y divide-slate-800 text-sm">
-                        {filteredFiles.map((file) => (
-                          <div
-                            key={file.name}
-                            onClick={() => file.type === 'folder' ? navigateIntoFolder(file.name) : setPreviewFile(file)}
-                            className="flex items-center justify-between p-3 sm:p-3.5 hover:bg-slate-800/40 cursor-pointer transition gap-2"
-                          >
-                            <div className="flex items-center gap-2.5 sm:gap-3 min-w-0">
-                              {file.type === 'folder' ? <Folder className="h-5 w-5 text-blue-400 shrink-0" /> : <FileText className="h-5 w-5 text-slate-400 shrink-0" />}
-                              <span className="font-medium text-slate-200 text-xs sm:text-sm truncate">{file.name}</span>
-                            </div>
-                            <div className="flex items-center gap-2 sm:gap-5 text-xs text-slate-400 shrink-0">
-                              <span className="text-[11px] sm:text-xs">{file.size}</span>
-                              <span className="hidden md:inline text-[11px] sm:text-xs">{file.modified}</span>
-                              {file.type !== 'folder' && (
-                                <button onClick={(e) => handleDownload(file.path, e)} className="p-1.5 text-slate-400 hover:text-white rounded">
-                                  <Download className="h-4 w-4" />
+                        {filteredFiles.map((file) => {
+                          const isSelected = selectedFilePaths.includes(file.path);
+                          return (
+                            <div
+                              key={file.path || file.name}
+                              onClick={() => {
+                                if (selectedFilePaths.length > 0) {
+                                  toggleSelectFile(file.path);
+                                } else {
+                                  file.type === 'folder' ? navigateIntoFolder(file.name) : setPreviewFile(file);
+                                }
+                              }}
+                              className={`flex items-center justify-between p-3 sm:p-3.5 cursor-pointer transition gap-2 ${
+                                isSelected
+                                  ? 'bg-blue-950/40 border-l-4 border-blue-500'
+                                  : 'hover:bg-slate-800/40'
+                              }`}
+                            >
+                              <div className="flex items-center gap-2.5 sm:gap-3 min-w-0">
+                                <button
+                                  onClick={(e) => toggleSelectFile(file.path, e)}
+                                  className={`h-5 w-5 rounded-md flex items-center justify-center transition-all shrink-0 ${
+                                    isSelected
+                                      ? 'bg-blue-600 border-2 border-blue-400 text-white shadow-sm'
+                                      : 'bg-slate-900 border border-slate-600 hover:border-blue-400 text-transparent'
+                                  }`}
+                                  title={isSelected ? 'Deselect' : 'Select'}
+                                >
+                                  <Check className={`h-3 w-3 stroke-[3] ${isSelected ? 'block' : 'opacity-0'}`} />
                                 </button>
-                              )}
-                              <button onClick={(e) => handleDeleteFile(file.path, e)} className="p-1.5 text-slate-400 hover:text-rose-400 rounded">
-                                <Trash2 className="h-4 w-4" />
-                              </button>
+                                {file.type === 'folder' ? <Folder className="h-5 w-5 text-blue-400 shrink-0" /> : <FileText className="h-5 w-5 text-slate-400 shrink-0" />}
+                                <span className="font-medium text-slate-200 text-xs sm:text-sm truncate">{file.name}</span>
+                              </div>
+                              <div className="flex items-center gap-2 sm:gap-5 text-xs text-slate-400 shrink-0">
+                                <span className="text-[11px] sm:text-xs">{file.size}</span>
+                                <span className="hidden md:inline text-[11px] sm:text-xs">{file.modified}</span>
+                                {file.type !== 'folder' && (
+                                  <button onClick={(e) => handleDownload(file.path, e)} className="p-1.5 text-slate-400 hover:text-white rounded">
+                                    <Download className="h-4 w-4" />
+                                  </button>
+                                )}
+                                <button onClick={(e) => handleDeleteFile(file.path, e)} className="p-1.5 text-slate-400 hover:text-rose-400 rounded">
+                                  <Trash2 className="h-4 w-4" />
+                                </button>
+                              </div>
                             </div>
-                          </div>
-                        ))}
+                          );
+                        })}
                       </div>
                     </div>
                   )}
@@ -1478,23 +1621,72 @@ export default function UserCloudPortal() {
               {activeTab === 'photos' && (
                 <div>
                   <div className="flex items-center justify-between mb-4">
-                    <h2 className="text-base sm:text-lg font-bold text-white">Photos & Moments</h2>
+                    <div className="flex items-center gap-3">
+                      <h2 className="text-base sm:text-lg font-bold text-white">Photos & Moments</h2>
+                      {photos.length > 0 && (
+                        <button
+                          onClick={toggleSelectAll}
+                          className={`px-2.5 py-1 rounded-lg text-xs font-medium border flex items-center gap-1.5 transition ${
+                            selectedFilePaths.length > 0
+                              ? 'bg-blue-600/20 border-blue-500/50 text-blue-300'
+                              : 'bg-slate-800/80 hover:bg-slate-700 border-slate-700 text-slate-300'
+                          }`}
+                        >
+                          <Check className={`h-3 w-3 stroke-[2.5] ${selectedFilePaths.length > 0 ? 'text-blue-400' : 'text-slate-400'}`} />
+                          <span>
+                            {selectedFilePaths.length === photos.length && photos.length > 0
+                              ? 'Deselect All'
+                              : selectedFilePaths.length > 0
+                                ? `Selected (${selectedFilePaths.length})`
+                                : 'Select All'}
+                          </span>
+                        </button>
+                      )}
+                    </div>
                     <span className="text-xs text-slate-400">{photos.length} Photos in Nextcloud</span>
                   </div>
                   <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3 sm:gap-4">
-                    {photos.map((photo) => (
-                      <div 
-                        key={photo.name}
-                        onClick={() => setPreviewFile(photo)}
-                        className="aspect-square bg-slate-900 rounded-2xl overflow-hidden cursor-pointer relative group border border-slate-800 active:scale-95 transition"
-                      >
-                        <img src={photo.url} alt={photo.name} className="h-full w-full object-cover group-hover:scale-105 transition duration-300" />
-                        <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent opacity-0 group-hover:opacity-100 transition p-3 flex flex-col justify-end">
-                          <div className="text-xs font-semibold text-white truncate">{photo.name}</div>
-                          <div className="text-[10px] text-slate-300">{photo.size}</div>
+                    {photos.map((photo) => {
+                      const isSelected = selectedFilePaths.includes(photo.path);
+                      return (
+                        <div 
+                          key={photo.path || photo.name}
+                          onClick={() => {
+                            if (selectedFilePaths.length > 0) {
+                              toggleSelectFile(photo.path);
+                            } else {
+                              setPreviewFile(photo);
+                            }
+                          }}
+                          className={`aspect-square rounded-2xl overflow-hidden cursor-pointer relative group border active:scale-95 transition ${
+                            isSelected
+                              ? 'border-blue-500 ring-2 ring-blue-500/50 shadow-lg shadow-blue-500/20'
+                              : 'border-slate-800 bg-slate-900'
+                          }`}
+                        >
+                          {/* Multi-Select Checkbox */}
+                          <button
+                            onClick={(e) => toggleSelectFile(photo.path, e)}
+                            className={`absolute top-2.5 left-2.5 z-10 h-6 w-6 rounded-lg flex items-center justify-center transition-all ${
+                              isSelected 
+                                ? 'bg-blue-600 border-2 border-blue-400 text-white shadow-md' 
+                                : selectedFilePaths.length > 0
+                                  ? 'bg-black/60 border-2 border-slate-500 text-transparent'
+                                  : 'bg-black/50 border-2 border-slate-600 text-transparent opacity-0 group-hover:opacity-100 hover:border-blue-400'
+                            }`}
+                            title={isSelected ? 'Deselect photo' : 'Select photo'}
+                          >
+                            <Check className={`h-3.5 w-3.5 stroke-[3] ${isSelected ? 'block' : 'opacity-0'}`} />
+                          </button>
+
+                          <img src={photo.url} alt={photo.name} className="h-full w-full object-cover group-hover:scale-105 transition duration-300" />
+                          <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent opacity-0 group-hover:opacity-100 transition p-3 flex flex-col justify-end">
+                            <div className="text-xs font-semibold text-white truncate">{photo.name}</div>
+                            <div className="text-[10px] text-slate-300">{photo.size}</div>
+                          </div>
                         </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 </div>
               )}
@@ -2177,6 +2369,100 @@ export default function UserCloudPortal() {
               </div>
             </div>
           )}
+        </div>
+      )}
+
+      {/* Floating Multi-Select Bulk Action Dock */}
+      {selectedFilePaths.length > 0 && (
+        <div className="fixed bottom-20 md:bottom-7 left-1/2 -translate-x-1/2 z-40 w-[94vw] sm:w-auto max-w-xl animate-in slide-in-from-bottom-5 duration-200">
+          <div className="bg-[#0e1628]/95 backdrop-blur-2xl border border-blue-500/50 rounded-2xl shadow-2xl shadow-black/80 px-4 sm:px-6 py-3 flex items-center justify-between gap-3 sm:gap-6">
+            {/* Left: Selected count */}
+            <div className="flex items-center gap-2.5 shrink-0">
+              <span className="flex h-6 w-6 items-center justify-center rounded-full bg-blue-600 text-xs font-bold text-white shadow-sm shadow-blue-500/50">
+                {selectedFilePaths.length}
+              </span>
+              <span className="text-xs font-semibold text-white hidden xs:inline">
+                {selectedFilePaths.length === 1 ? '1 item selected' : `${selectedFilePaths.length} items selected`}
+              </span>
+            </div>
+
+            {/* Middle: Select All / Deselect All */}
+            <div className="flex items-center gap-2">
+              <button
+                onClick={toggleSelectAll}
+                className="px-3 py-1.5 rounded-xl bg-slate-800/90 hover:bg-slate-700 text-slate-300 hover:text-white text-xs font-medium border border-slate-700 transition"
+              >
+                {selectedFilePaths.length === (activeTab === 'photos' ? photos.length : filteredFiles.length) && (activeTab === 'photos' ? photos.length : filteredFiles.length) > 0
+                  ? 'Deselect All'
+                  : 'Select All'}
+              </button>
+            </div>
+
+            {/* Right: Actions */}
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                onClick={() => setShowBatchDeleteModal(true)}
+                disabled={isBatchDeleting}
+                className="px-3.5 sm:px-4 py-1.5 rounded-xl bg-gradient-to-r from-rose-600 to-red-600 hover:from-rose-500 hover:to-red-500 text-white text-xs font-semibold flex items-center gap-1.5 shadow-lg shadow-rose-600/30 active:scale-95 transition disabled:opacity-50"
+              >
+                <Trash2 className="h-4 w-4" />
+                <span>Delete ({selectedFilePaths.length})</span>
+              </button>
+
+              <button
+                onClick={clearSelection}
+                className="p-1.5 text-slate-400 hover:text-white rounded-xl hover:bg-slate-800 transition"
+                title="Cancel Selection"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Batch Delete Confirmation Modal */}
+      {showBatchDeleteModal && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-md z-50 flex items-center justify-center p-4">
+          <div className="bg-[#111827] border border-slate-700/80 rounded-3xl max-w-sm w-full p-6 shadow-2xl relative overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+            <div className="w-12 h-12 rounded-2xl bg-rose-500/10 border border-rose-500/20 text-rose-400 flex items-center justify-center mb-4 shadow-lg shadow-rose-500/10">
+              <Trash2 className="h-6 w-6" />
+            </div>
+
+            <h3 className="font-bold text-lg text-white mb-2">
+              Delete {selectedFilePaths.length} {selectedFilePaths.length === 1 ? 'Item' : 'Items'}?
+            </h3>
+            <p className="text-xs text-slate-400 leading-relaxed mb-6">
+              Are you sure you want to permanently delete {selectedFilePaths.length} selected items from physical storage on <span className="text-slate-200 font-semibold">{selectedDisk?.name || 'CloudNAS'}</span>? This cannot be undone.
+            </p>
+
+            <div className="flex items-center justify-end gap-3">
+              <button
+                onClick={() => setShowBatchDeleteModal(false)}
+                disabled={isBatchDeleting}
+                className="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium transition"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleBatchDelete}
+                disabled={isBatchDeleting}
+                className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-rose-600 to-red-600 hover:from-rose-500 hover:to-red-500 text-white text-xs font-semibold flex items-center gap-1.5 shadow-lg shadow-rose-600/30 transition disabled:opacity-50"
+              >
+                {isBatchDeleting ? (
+                  <>
+                    <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                    <span>Deleting...</span>
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="h-3.5 w-3.5" />
+                    <span>Yes, Delete</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

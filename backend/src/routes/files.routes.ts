@@ -397,9 +397,16 @@ router.post('/move', renameHandler);
 
 // DELETE /api/files/delete or DELETE /api/files - Deletes directly from physical storage
 const deleteHandler = async (req: Request, res: Response): Promise<void> => {
-  const targetPath = (req.query.path as string) || req.body?.path;
-  if (!targetPath) {
-    res.status(400).json({ success: false, error: 'Target path is required for deletion' });
+  const targetPaths: string[] = Array.isArray(req.body?.paths)
+    ? req.body.paths
+    : req.body?.path
+    ? [req.body.path]
+    : req.query.path
+    ? [req.query.path as string]
+    : [];
+
+  if (targetPaths.length === 0) {
+    res.status(400).json({ success: false, error: 'Target path or paths array is required for deletion' });
     return;
   }
 
@@ -410,15 +417,26 @@ const deleteHandler = async (req: Request, res: Response): Promise<void> => {
   }
 
   try {
-    const localTarget = path.join(liveStatus.mountPoint, targetPath.replace(/^\/+/, ''));
-    if (fs.existsSync(localTarget)) {
-      fs.rmSync(localTarget, { recursive: true, force: true });
-      logger.info(`[PHYSICAL STORAGE] Deleted "${targetPath}" from ${liveStatus.mountPoint}`);
+    let deletedCount = 0;
+    for (const itemPath of targetPaths) {
+      if (typeof itemPath !== 'string') continue;
+      // Prevent path traversal
+      if (itemPath.includes('..')) continue;
+
+      const localTarget = path.join(liveStatus.mountPoint, itemPath.replace(/^\/+/, ''));
+      if (fs.existsSync(localTarget)) {
+        fs.rmSync(localTarget, { recursive: true, force: true });
+        logger.info(`[PHYSICAL STORAGE] Deleted "${itemPath}" from ${liveStatus.mountPoint}`);
+        deletedCount++;
+      }
     }
 
     res.json({
       success: true,
-      message: `Item at "${targetPath}" deleted from physical storage`,
+      count: deletedCount,
+      message: deletedCount === 1 
+        ? `Item deleted from physical storage` 
+        : `${deletedCount} items deleted from physical storage`,
     });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
