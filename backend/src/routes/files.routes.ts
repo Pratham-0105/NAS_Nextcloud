@@ -48,26 +48,23 @@ export function checkPhysicalStorageLive(force = false): PhysicalStorageCheckRes
     }
 
     try {
-      const out = execSync(`/usr/sbin/diskutil info "${mountPath}"`, { encoding: 'utf8', timeout: 5000 });
-      const isMounted = out.includes('Mounted:                   Yes') || out.includes('Mounted: Yes');
+      fs.accessSync(mountPath, fs.constants.R_OK | fs.constants.W_OK);
       cachedStorageStatus = {
-        connected: isMounted,
-        isMounted,
-        mountPoint: isMounted ? mountPath : null,
+        connected: true,
+        isMounted: true,
+        mountPoint: mountPath,
         device: 'disk12',
         label: 'CloudNAS',
-        status: isMounted ? 'ONLINE' : 'DISCONNECTED',
+        status: 'ONLINE',
       };
     } catch {
-      // If diskutil times out but directory exists and is accessible, fallback to connected
-      const accessible = fs.existsSync(mountPath);
       cachedStorageStatus = {
-        connected: accessible,
-        isMounted: accessible,
-        mountPoint: accessible ? mountPath : null,
+        connected: false,
+        isMounted: false,
+        mountPoint: null,
         device: 'disk12',
         label: 'CloudNAS',
-        status: accessible ? 'ONLINE' : 'DISCONNECTED',
+        status: 'DISCONNECTED',
       };
     }
     lastStorageCheckTime = now;
@@ -237,7 +234,16 @@ router.get('/list', listHandler);
 router.get('/', listHandler);
 
 // POST /api/files/upload - Stores file SINGLE COPY exclusively on physical drive
-router.post('/upload', upload.single('file'), async (req: Request, res: Response): Promise<void> => {
+router.post('/upload', (req: Request, res: Response, next: any) => {
+  upload.single('file')(req, res, (err: any) => {
+    if (err) {
+      logger.warn(`[UPLOAD VALIDATION REJECTED] ${err.message}`);
+      res.status(400).json({ success: false, error: err.message || 'File upload validation failed' });
+      return;
+    }
+    next();
+  });
+}, async (req: Request, res: Response): Promise<void> => {
   if (!req.file) {
     res.status(400).json({ success: false, error: 'No file attached in upload request' });
     return;

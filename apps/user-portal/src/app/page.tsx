@@ -65,6 +65,7 @@ export interface UploadQueueItem {
   speedStr?: string;
   error?: string;
   file: File;
+  retryCount?: number;
 }
 
 
@@ -375,8 +376,8 @@ export default function UserCloudPortal() {
     setUploadManagerMinimized(false);
   }, [diskInfo]);
 
-  // Queue Processor Engine with 4x Parallel Streams & Throttled Sync
-  const MAX_CONCURRENT_UPLOADS = 4;
+  // Queue Processor Engine with 3x Parallel Streams, Auto-Retry & Tunnel Protection
+  const MAX_CONCURRENT_UPLOADS = 3;
   useEffect(() => {
     const queuedItems = uploadQueue.filter(item => item.status === 'queued' && !activeUploadsRef.current.has(item.id));
     if (queuedItems.length === 0) return;
@@ -426,41 +427,53 @@ export default function UserCloudPortal() {
         }
       };
 
-      xhr.onload = () => {
+      const handleUploadFailure = (rawError: string) => {
         activeUploadsRef.current.delete(item.id);
-        const isSuccess = xhr.status >= 200 && xhr.status < 300;
+        const retries = item.retryCount || 0;
+        if (retries < 1) {
+          // Automatic 1-retry with backoff to recover transient tunnel/proxy hiccups
+          setTimeout(() => {
+            setUploadQueue(prev => prev.map(q => q.id === item.id ? {
+              ...q,
+              status: 'queued',
+              progress: 0,
+              loadedBytes: 0,
+              error: undefined,
+              retryCount: retries + 1,
+            } : q));
+          }, 1200);
+        } else {
+          setUploadQueue(prev => prev.map(q => q.id === item.id ? {
+            ...q,
+            status: 'error',
+            error: rawError,
+          } : q));
+        }
+      };
 
-        let errText = 'Upload failed';
-        if (!isSuccess) {
+      xhr.onload = () => {
+        const isSuccess = xhr.status >= 200 && xhr.status < 300;
+        if (isSuccess) {
+          activeUploadsRef.current.delete(item.id);
+          setUploadQueue(prev => prev.map(q => q.id === item.id ? {
+            ...q,
+            progress: 100,
+            loadedBytes: q.size,
+            status: 'completed',
+            error: undefined,
+          } : q));
+        } else {
+          let errText = `Upload error (${xhr.status})`;
           try {
             const parsed = JSON.parse(xhr.responseText);
             errText = parsed.error || errText;
           } catch {}
-        }
-
-        setUploadQueue(prev => prev.map(q => q.id === item.id ? {
-          ...q,
-          progress: isSuccess ? 100 : q.progress,
-          loadedBytes: isSuccess ? q.size : q.loadedBytes,
-          status: isSuccess ? 'completed' : 'error',
-          error: isSuccess ? undefined : errText,
-        } : q));
-
-        // Throttle file list refresh (at most once every 4s while uploading)
-        const now = Date.now();
-        if (now - lastRefreshTimeRef.current > 4000) {
-          lastRefreshTimeRef.current = now;
-          fetchCloudFiles(true);
+          handleUploadFailure(errText);
         }
       };
 
       xhr.onerror = () => {
-        activeUploadsRef.current.delete(item.id);
-        setUploadQueue(prev => prev.map(q => q.id === item.id ? {
-          ...q,
-          status: 'error',
-          error: 'Network connection error',
-        } : q));
+        handleUploadFailure('Connection dropped by network/tunnel');
       };
 
       const formData = new FormData();
@@ -471,7 +484,7 @@ export default function UserCloudPortal() {
       }
       xhr.send(formData);
     });
-  }, [uploadQueue, currentUser, getFolderPath, fetchCloudFiles]);
+  }, [uploadQueue, currentUser, getFolderPath]);
 
   // Derived Real-Time Batch Metrics
   const totalQueueBytes = uploadQueue.reduce((acc, it) => acc + it.size, 0);
@@ -2298,14 +2311,18 @@ export default function UserCloudPortal() {
                 <div className="flex items-center gap-2.5">
                   <div className={`p-2 rounded-xl ${
                     allUploadsFinished 
-                      ? 'bg-emerald-500/20 text-emerald-400' 
+                      ? (errorUploadsCount > 0 ? 'bg-amber-500/20 text-amber-400' : 'bg-emerald-500/20 text-emerald-400')
                       : 'bg-gradient-to-tr from-blue-600 to-indigo-600 text-white shadow-md shadow-blue-500/30'
                   }`}>
-                    {allUploadsFinished ? <CheckCircle2 className="h-5 w-5" /> : <UploadCloud className="h-5 w-5 animate-pulse" />}
+                    {allUploadsFinished 
+                      ? (errorUploadsCount > 0 ? <AlertCircle className="h-5 w-5" /> : <CheckCircle2 className="h-5 w-5" />)
+                      : <UploadCloud className="h-5 w-5 animate-pulse" />}
                   </div>
                   <div>
                     <h4 className="font-bold text-sm text-white flex items-center gap-1.5">
-                      {allUploadsFinished ? 'All Uploads Completed!' : 'Uploading to CloudNAS'}
+                      {allUploadsFinished 
+                        ? (errorUploadsCount > 0 ? `${errorUploadsCount} ${errorUploadsCount === 1 ? 'upload' : 'uploads'} need attention` : 'All Uploads Completed!')
+                        : 'Uploading to CloudNAS'}
                     </h4>
                     <p className="text-[11px] text-slate-400 font-mono">
                       {completedUploadsCount} of {uploadQueue.length} files ({formatBytes(totalLoadedBytes)} / {formatBytes(totalQueueBytes)})
@@ -2392,12 +2409,26 @@ export default function UserCloudPortal() {
                           </span>
                         )}
                         {item.status === 'error' && (
-                          <span className="text-[10px] font-semibold text-rose-400 bg-rose-500/10 px-2 py-0.5 rounded-full border border-rose-500/20" title={item.error}>
-                            Failed
-                          </span>
+                          <button
+                            onClick={() => {
+                              setUploadQueue(prev => prev.map(q => q.id === item.id ? { ...q, status: 'queued', progress: 0, loadedBytes: 0, error: undefined, retryCount: 0 } : q));
+                            }}
+                            className="text-[10px] font-semibold text-rose-300 hover:text-white bg-rose-500/20 hover:bg-rose-500/30 px-2 py-0.5 rounded-full border border-rose-500/30 transition flex items-center gap-1 cursor-pointer"
+                            title="Click to retry upload"
+                          >
+                            <RefreshCw className="h-2.5 w-2.5" /> Retry
+                          </button>
                         )}
                       </div>
                     </div>
+
+                    {/* Detailed Failure Banner */}
+                    {item.status === 'error' && (
+                      <div className="flex items-center justify-between text-[11px] text-rose-300 bg-rose-500/10 px-2.5 py-1 rounded-lg border border-rose-500/20">
+                        <span className="truncate max-w-[230px] sm:max-w-[270px]">⚠️ {item.error || 'Connection interrupted'}</span>
+                        <span className="text-[10px] text-slate-400">tap Retry above</span>
+                      </div>
+                    )}
 
                     {/* Individual Progress Bar */}
                     {item.status === 'uploading' && (
@@ -2426,6 +2457,16 @@ export default function UserCloudPortal() {
                   {allUploadsFinished ? 'All transfers finished' : `${uploadQueue.filter(i => i.status === 'queued').length.toLocaleString()} items remaining`}
                 </span>
                 <div className="flex items-center gap-2">
+                  {errorUploadsCount > 0 && (
+                    <button
+                      onClick={() => {
+                        setUploadQueue(prev => prev.map(q => q.status === 'error' ? { ...q, status: 'queued', progress: 0, loadedBytes: 0, error: undefined, retryCount: 0 } : q));
+                      }}
+                      className="px-2.5 py-1.5 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 text-xs font-semibold border border-amber-500/30 transition flex items-center gap-1 shadow-sm"
+                    >
+                      <RefreshCw className="h-3 w-3" /> Retry Failed ({errorUploadsCount})
+                    </button>
+                  )}
                   {uploadQueue.some(i => i.status === 'queued') && (
                     <button
                       onClick={() => {
@@ -2440,11 +2481,11 @@ export default function UserCloudPortal() {
                   <button
                     onClick={() => {
                       setUploadQueue(prev => prev.filter(i => i.status !== 'completed'));
-                      if (allUploadsFinished) setUploadManagerOpen(false);
+                      if (allUploadsFinished && errorUploadsCount === 0) setUploadManagerOpen(false);
                     }}
                     className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium transition"
                   >
-                    {allUploadsFinished ? 'Clear & Close' : 'Clear Completed'}
+                    {allUploadsFinished && errorUploadsCount === 0 ? 'Clear & Close' : 'Clear Completed'}
                   </button>
                 </div>
               </div>
