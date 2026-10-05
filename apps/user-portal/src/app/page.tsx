@@ -286,7 +286,13 @@ export default function UserCloudPortal() {
         }),
       });
 
-      const data = await res.json();
+      let data: any = {};
+      try {
+        const text = await res.text();
+        data = JSON.parse(text);
+      } catch {
+        throw new Error(`Cloud gateway returned status ${res.status} (${res.statusText || 'Offline'}). Backend tunnel may be reconnecting.`);
+      }
       if (res.ok && data.success) {
         localStorage.setItem('cloudnas_token', data.token);
         localStorage.setItem('cloudnas_user', JSON.stringify(data.user));
